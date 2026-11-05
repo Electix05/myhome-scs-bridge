@@ -21,6 +21,9 @@ from myhome_scs_mqtt.app.web import server as server_module
 
 ADDON_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                          "myhome_scs_mqtt")
+# Defaults of the Supervisor: the app linter refuses them spelled out in config.yaml.
+DEFAULT_ROLE = "default"
+DEFAULT_INGRESS_PORT = 8099
 
 
 def read(name: str) -> str:
@@ -159,7 +162,7 @@ class TestImage(unittest.TestCase):
         config = manifest()
         self.assertEqual(config["map"], ["addon_config:rw"])
         self.assertEqual(config["services"], ["mqtt:need"])
-        self.assertEqual(config["hassio_role"], "default")
+        self.assertEqual(config.get("hassio_role", DEFAULT_ROLE), DEFAULT_ROLE)
         self.assertNotIn("host_network", config)
         self.assertNotIn("privileged", config)
         self.assertNotIn("ports", config)
@@ -170,7 +173,8 @@ class TestImage(unittest.TestCase):
     def test_ingress_port_matches_the_web_server(self):
         config = manifest()
         self.assertTrue(config["ingress"])
-        self.assertEqual(config["ingress_port"], server_module.INGRESS_PORT)
+        self.assertEqual(config.get("ingress_port", DEFAULT_INGRESS_PORT),
+                         server_module.INGRESS_PORT)
 
     def test_dockerfile_pins_its_base_and_keeps_no_cache(self):
         dockerfile = read("Dockerfile")
