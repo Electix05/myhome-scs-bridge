@@ -43,7 +43,7 @@ python3 -m venv .venv
 
 Die Tests brauchen weder Gateway noch Broker: `tests/fake_gateway.py` und `tests/fake_broker.py` laufen auf `127.0.0.1`.
 
-Bei jedem Push auf `entwicklung` oder `main` und bei jedem Pull Request baut GitHub das Image für beide Architekturen und führt alle Tests darin aus.
+Bei jedem Push und bei jedem Pull Request baut GitHub das Image für beide Architekturen und führt alle Tests darin aus.
 
 Verweise auf `berichte/` und `WISSEN.md` im Code zeigen auf interne Unterlagen, die nicht in diesem Repository liegen.
 
