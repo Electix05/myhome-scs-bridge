@@ -1,0 +1,73 @@
+configuration:
+  gateway_host:
+    name: IP-Adresse des Gateways
+    description: IP-Adresse des OpenWebNet-Gateways (F461, MH201, F454, F455, MyHOMEServer1 ...). Pflichtfeld.
+  gateway_port:
+    name: Port des Gateways
+    description: OpenWebNet-Port, bei praktisch allen Gateways 20000.
+  gateway_password:
+    name: OPEN-Passwort
+    description: OPEN-Passwort des Gateways. Das klassische Verfahren (z. B. MH201) verlangt reine Ziffern. Leer lassen, wenn das Gateway nur nach IP-Adresse filtert.
+  gateway_auth:
+    name: Anmeldeverfahren
+    description: auto erkennt das Verfahren des Gateways selbst. open (klassische Nonce) oder hmac nur zur Fehlersuche erzwingen.
+  mqtt_host:
+    name: MQTT-Broker
+    description: Leer lassen, dann wird der in Home Assistant eingerichtete Broker verwendet.
+  mqtt_port:
+    name: MQTT-Port
+    description: Nur zusammen mit einer manuellen Broker-Adresse nötig.
+  mqtt_username:
+    name: MQTT-Benutzer
+    description: Nur zusammen mit einer manuellen Broker-Adresse nötig.
+  mqtt_password:
+    name: MQTT-Passwort
+    description: Nur zusammen mit einer manuellen Broker-Adresse nötig.
+  mqtt_discovery_prefix:
+    name: Discovery-Präfix
+    description: Muss zum Discovery-Präfix der MQTT-Integration passen (Standard homeassistant).
+  mqtt_base_topic:
+    name: Basis-Topic
+    description: Präfix aller Status- und Kommando-Topics dieser Bridge. Nicht auf myhome stellen, solange die MyHome SCS MQTT Bridge läuft – sonst räumen sich beide gegenseitig die Topics weg.
+  devices_file:
+    name: Gerätedatei
+    description: YAML-Datei mit den Gerätedefinitionen. Wird beim ersten Start mit Beispielen angelegt. Zweite Anlage = eigene Datei, z. B. /config/devices_haus2.yaml.
+  instance_id:
+    name: Kennung dieser Instanz
+    description: Nur ändern, wenn das Add-on mehrfach läuft (eine Instanz je MyHome-Anlage). Erlaubt sind Kleinbuchstaben, Ziffern und _, höchstens 32 Zeichen; myhome_scs_bridge darf nicht darin vorkommen. Die Kennung steckt in jeder unique_id, im Discovery-Knoten und in der MQTT-Client-ID – wird sie geändert, legt Home Assistant alle Entities neu an und die Historie beginnt von vorn. Bei einer zweiten Instanz zusammen mit Basis-Topic und Gerätedatei umstellen (siehe Dokumentation).
+  name_prefix:
+    name: Namenspräfix
+    description: Steht vor jedem Gerätenamen, z. B. „Haus 2“ ergibt „Haus 2 Küche“. Leer lassen, wenn die Namen unverändert bleiben sollen. Praktisch bei zwei Anlagen in einem Home Assistant.
+  auto_discover:
+    name: Automatische Geräteerkennung
+    description: Legt Entities für Adressen an, die auf dem Bus auftauchen und nicht in der Gerätedatei stehen.
+  scan_on_start:
+    name: Bus beim Start scannen
+    description: Scannt automatisch, solange noch kein Gerät bekannt ist. Von Hand lässt sich der Scan jederzeit über den Knopf „Bus scannen“ starten.
+  scan_zones:
+    name: Heizzonen abfragen
+    description: Die Zonen 1..N werden nach ihrer Temperatur gefragt. 0 überspringt sie.
+  scan_meters:
+    name: Energiezähler abfragen
+    description: Die Zähler 51..5N werden nach ihrer Leistung gefragt. 0 überspringt sie.
+  scan_contacts:
+    name: Kontakte abfragen
+    description: Die Kontakte 31..3N werden nach ihrem Zustand gefragt. 0 überspringt sie.
+  poll_interval:
+    name: Aktualisierungsintervall (Sekunden)
+    description: Wie oft alle bekannten Geräte nach ihrem Zustand gefragt werden. 0 schaltet das Abfragen ab.
+  bus_brake_threshold:
+    name: Bremse – Störungen
+    description: So viele abgelehnte oder unbeantwortete Frames innerhalb des Zeitfensters lassen das Add-on langsamer senden. Abgelehnte Fähigkeits-Abfragen zählen nie. Vorläufiger Startwert 3 – wird nach der Messung an echter Hardware festgelegt.
+  bus_brake_window:
+    name: Bremse – Zeitfenster (Sekunden)
+    description: Zeitfenster für die Störungen oben. Vorläufiger Startwert 3 Sekunden.
+  dead_after:
+    name: Adresse stilllegen nach … Ablehnungen
+    description: Wird eine Adresse so oft hintereinander abgelehnt, fragt das Add-on sie nicht mehr ab und zeigt sie in Home Assistant als „nicht verfügbar“. Alle zehn Minuten versucht es einmal erneut; schalten lässt sie sich jederzeit. 0 schaltet das ab.
+  command_reserve:
+    name: Reserve für Befehle (Frames pro Sekunde)
+    description: So viel vom Bus bleibt für Befehle aus Home Assistant frei. Abfragen, Sonden und der Bus-Scan dürfen nur den Rest der fünf Frames pro Sekunde nutzen. Höher = Schalten bleibt auch während eines Scans flott, Abfragen dauern länger.
+  log_level:
+    name: Protokollstufe
+    description: Mit trace wird jeder einzelne OpenWebNet-Frame protokolliert, mit debug unter anderem die Wartezeit jedes Frames und die Bremse.

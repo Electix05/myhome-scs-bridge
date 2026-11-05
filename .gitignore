@@ -1,0 +1,38 @@
+# This repository is public, and whatever was pushed once can stay in forks and
+# caches for good.  So the list works the other way round: everything is hidden,
+# and only what is named here may go up.  New files stay local until somebody
+# decides otherwise - tests/test_repository.py keeps this list from growing by
+# accident.
+/*
+!/.github/
+!/.gitignore
+!/repository.yaml
+!/README.md
+!/KOMPATIBILITAET.md
+!/myhome_scs_mqtt/
+!/tests/
+!/testgeraet/
+
+# Inside the allowed folders: what tools leave behind ...
+__pycache__/
+*.pyc
+.ruff_cache/
+.pytest_cache/
+.DS_Store
+._*
+
+# ... and what would describe a real installation, including the variants a second
+# installation or a backup ends up with.
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.log
+devices*.yaml
+devices*.yml
+discovered*.json
+options*.json
+scan_result*
+.env
+*.pem
+*.key

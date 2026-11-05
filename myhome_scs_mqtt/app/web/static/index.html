@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MyHome SCS Bridge</title>
+<style>
+:root {
+  --bg: #f6f7f9; --card: #fff; --fg: #1c1e21; --muted: #6b7280;
+  --line: #e3e6ea; --accent: #03a9f4; --danger: #d93025; --ok: #1a7f37;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#111418; --card:#1c2026; --fg:#e8eaed; --muted:#9aa0a6;
+          --line:#2c3138; --accent:#4fc3f7; --danger:#f28b82; --ok:#81c995; }
+}
+* { box-sizing: border-box; }
+body { margin:0; padding:16px; background:var(--bg); color:var(--fg);
+  font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+body > * { position: relative; z-index: 1; }
+h1 { font-size:20px; margin:0 0 4px; }
+h2 { font-size:15px; margin:0; font-weight:600; }
+.sub { color:var(--muted); margin-bottom:16px; }
+.bar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:16px; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:10px;
+  margin-bottom:12px; overflow:hidden; }
+.card > header { display:flex; justify-content:space-between; align-items:center;
+  padding:10px 14px; cursor:pointer; user-select:none; }
+.card > header:hover { background:rgba(127,127,127,.06); }
+.count { color:var(--muted); font-weight:400; font-size:13px; }
+.body { padding:0 14px 12px; }
+/* Lights carry five options next to address and name - on a narrow screen the
+   table scrolls sideways instead of squeezing every field. */
+.scroll { overflow-x:auto; }
+table { width:100%; border-collapse:collapse; min-width:520px; }
+th { text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.04em;
+  color:var(--muted); font-weight:600; padding:6px 6px; border-bottom:1px solid var(--line); }
+td { padding:4px 6px; border-bottom:1px solid var(--line); vertical-align:middle; }
+tr:last-child td { border-bottom:none; }
+input[type=text], input[type=number], select { width:100%; padding:6px 8px;
+  border:1px solid var(--line); border-radius:6px; background:var(--bg);
+  color:var(--fg); font:inherit; min-width:70px; }
+input:focus, select:focus { outline:2px solid var(--accent); outline-offset:-1px; }
+input[type=checkbox] { width:17px; height:17px; accent-color:var(--accent); }
+button { padding:7px 13px; border:1px solid var(--line); border-radius:7px;
+  background:var(--card); color:var(--fg); font:inherit; cursor:pointer; }
+button:hover { border-color:var(--accent); }
+button.primary { background:var(--accent); border-color:var(--accent); color:#08252e; font-weight:600; }
+button.link { border:none; background:none; color:var(--danger); padding:4px 6px; }
+button.small { padding:4px 9px; font-size:12px; }
+.pill { display:inline-flex; align-items:center; gap:6px; padding:4px 10px;
+  border-radius:999px; background:var(--card); border:1px solid var(--line); font-size:13px; }
+.dot { width:8px; height:8px; border-radius:50%; background:var(--danger); }
+.dot.on { background:var(--ok); }
+.mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
+.sendrow { display:flex; gap:8px; margin:10px 0 6px; }
+.sendrow input { flex:1; min-width:0; }
+#frames { max-height:260px; overflow:auto; }
+#frames div { display:flex; justify-content:space-between; gap:8px; padding:3px 0;
+  border-bottom:1px solid var(--line); }
+#toast { position:fixed; left:50%; bottom:20px; transform:translateX(-50%);
+  background:var(--fg); color:var(--bg); padding:10px 18px; border-radius:8px;
+  opacity:0; transition:opacity .2s; pointer-events:none; z-index:2; }
+#toast.show { opacity:1; }
+.hint { color:var(--muted); font-size:12px; margin:6px 0 0; }
+</style>
+</head>
+<body>
+<h1>MyHome SCS Bridge</h1>
+<div class="sub" id="status">wird geladen …</div>
+
+<div class="bar">
+  <button class="primary" onclick="save()">Speichern &amp; neu starten</button>
+  <button onclick="save(false)">Nur speichern</button>
+  <button onclick="scan(false)">Bus scannen</button>
+  <button onclick="scan(true)">Gründlich scannen</button>
+  <span class="pill"><span class="dot" id="link"></span><span id="linktext">Gateway</span></span>
+</div>
+
+<div id="sections"></div>
+
+<div class="card">
+  <header onclick="toggle(this)"><h2>Bus-Mitschnitt</h2><span class="count" id="framecount"></span></header>
+  <div class="body">
+    <p class="hint">Taster drücken oder Licht schalten – die Adresse erscheint hier und
+      lässt sich direkt übernehmen.</p>
+    <div class="sendrow">
+      <input id="frame" class="mono" placeholder="*1*1*29##" spellcheck="false"
+             autocomplete="off" onkeydown="if (event.key === 'Enter') sendFrame()">
+      <button onclick="sendFrame()">Senden</button>
+    </div>
+    <p class="hint">Was hier eingetippt wird, geht unverändert auf den Bus. Die Antwort
+      erscheint im Mitschnitt darunter.</p>
+    <div id="frames" class="mono"></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+let SCHEMA = {}, DATA = {}, dirty = false;
+
+const api = (p, o) => fetch(p, o).then(r => r.json());
+const toast = (t) => { const e = document.getElementById('toast');
+  e.textContent = t; e.classList.add('show'); setTimeout(() => e.classList.remove('show'), 2600); };
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+function toggle(h) {
+  const b = h.nextElementSibling;
+  b.style.display = b.style.display === 'none' ? '' : 'none';
+}
+
+async function load() {
+  SCHEMA = await api('api/schema');
+  DATA = await api('api/devices');
+  render();
+  refresh();
+  setInterval(refresh, 3000);
+}
+
+function render() {
+  const root = document.getElementById('sections');
+  root.innerHTML = '';
+  for (const [section, spec] of Object.entries(SCHEMA)) {
+    const items = DATA[section] || [];
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.innerHTML = `<header onclick="toggle(this)"><h2>${esc(spec.label)}</h2>
+      <span class="count">${items.length}</span></header><div class="body"></div>`;
+    const body = card.querySelector('.body');
+    if (spec.note) {
+      const note = document.createElement('p');
+      note.className = 'hint';
+      note.style.margin = '0 0 8px';
+      note.textContent = spec.note;
+      body.appendChild(note);
+    }
+    const table = document.createElement('table');
+    table.innerHTML = '<thead><tr><th style="width:110px">Adresse</th><th>Name</th>' +
+      spec.fields.map(f => `<th>${esc(f.label)}</th>`).join('') + '<th style="width:40px"></th></tr></thead>';
+    const tbody = document.createElement('tbody');
+    items.forEach((item, index) => tbody.appendChild(row(section, spec, item, index)));
+    table.appendChild(tbody);
+    const scroll = document.createElement('div');
+    scroll.className = 'scroll';
+    scroll.appendChild(table);
+    body.appendChild(scroll);
+    const add = document.createElement('button');
+    add.className = 'small';
+    add.style.marginTop = '10px';
+    add.textContent = '+ Gerät';
+    add.onclick = () => { (DATA[section] = DATA[section] || []).push({where: '', name: ''});
+      dirty = true; render(); };
+    body.appendChild(add);
+    if (!items.length) body.querySelector('table').style.display = 'none';
+    root.appendChild(card);
+  }
+}
+
+function row(section, spec, item, index) {
+  const tr = document.createElement('tr');
+  const set = (key, value) => { dirty = true;
+    if (value === '' || value === null) delete item[key]; else item[key] = value; };
+
+  const where = document.createElement('input');
+  where.type = 'text'; where.className = 'mono'; where.value = item.where || '';
+  where.placeholder = '12'; where.oninput = () => set('where', where.value.trim());
+  const name = document.createElement('input');
+  name.type = 'text'; name.value = item.name || '';
+  name.placeholder = 'Name'; name.oninput = () => set('name', name.value);
+  tr.appendChild(cell(where)); tr.appendChild(cell(name));
+
+  for (const f of spec.fields) {
+    let el;
+    if (f.type === 'bool') {
+      el = document.createElement('input'); el.type = 'checkbox';
+      el.checked = !!item[f.key];
+      el.onchange = () => { dirty = true; item[f.key] = el.checked; };
+    } else if (f.type === 'select') {
+      el = document.createElement('select');
+      if (f.wide) el.style.minWidth = '230px';
+      const options = f.options.map(o => (typeof o === 'string' ? {value: o, label: o} : o));
+      const current = item[f.key];
+      // An entry that is no longer offered must not disappear silently.
+      if (current && !options.some(o => o.value === current))
+        options.unshift({value: current, label: current + ' (unbekannt)'});
+      el.innerHTML = '<option value="">— keine —</option>' +
+        options.map(o => `<option value="${esc(o.value)}"` +
+          `${current === o.value ? ' selected' : ''}>${esc(o.label)}</option>`).join('');
+      el.onchange = () => set(f.key, el.value);
+    } else if (f.type === 'list') {
+      el = document.createElement('input'); el.type = 'text';
+      el.placeholder = f.placeholder || '';
+      el.value = Array.isArray(item[f.key]) ? item[f.key].join(', ') : (item[f.key] || '');
+      el.oninput = () => { dirty = true;
+        const v = el.value.split(',').map(s => s.trim()).filter(Boolean)
+          .map(s => isNaN(s) ? s : Number(s));
+        if (v.length) item[f.key] = v; else delete item[f.key]; };
+    } else {
+      el = document.createElement('input');
+      el.type = f.type === 'number' ? 'number' : 'text';
+      el.step = 'any'; el.placeholder = f.placeholder || '';
+      el.value = item[f.key] == null ? '' : item[f.key];
+      el.oninput = () => set(f.key, el.value === '' ? '' :
+        (f.type === 'number' ? Number(el.value) : el.value));
+    }
+    tr.appendChild(cell(el));
+  }
+
+  const del = document.createElement('button');
+  del.className = 'link'; del.title = 'Entfernen'; del.textContent = '✕';
+  del.onclick = () => { DATA[section].splice(index, 1); dirty = true; render(); };
+  tr.appendChild(cell(del));
+  return tr;
+}
+
+function cell(el) { const td = document.createElement('td'); td.appendChild(el); return td; }
+
+async function save(restart = true) {
+  const clean = {};
+  for (const [section, items] of Object.entries(DATA)) {
+    const kept = (items || []).filter(i => String(i.where || '').trim() !== '');
+    if (kept.length) clean[section] = kept;
+  }
+  let r;
+  try {
+    r = await api('api/devices', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(clean)});
+  } catch (e) { toast('Keine Verbindung zum Add-on – nichts gespeichert.'); return; }
+  // Only a confirmed save may restart the add-on.
+  if (!r.ok) { toast(r.error || 'Speichern fehlgeschlagen.'); return; }
+  dirty = false;
+  if (restart) { toast('Gespeichert – Add-on startet neu …');
+    await api('api/restart', {method: 'POST'}).catch(() => {}); }
+  else toast('Gespeichert. Wirksam nach einem Neustart.');
+}
+
+async function scan(deep) {
+  try {
+    await api('api/scan', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({deep: deep})});
+  } catch (e) { toast('Keine Verbindung zum Add-on.'); return; }
+  toast(deep ? 'Gründlicher Scan gestartet …' : 'Scan gestartet …');
+}
+
+async function refresh() {
+  try {
+    const s = await api('api/status');
+    document.getElementById('status').textContent =
+      `${s.instance ? 'Instanz ' + s.instance + ' · ' : ''}` +
+      `${s.scanning ? 'Bus-Scan läuft – Schalten kann einige Sekunden dauern · ' : ''}` +
+      `${s.devices} Geräte · Gateway ${s.host} · ${s.scan} · ` +
+      `MQTT ${s.mqtt_broker} (${s.subscriptions} Abos) · ` +
+      `Bus: ${s.sent_per_minute}/min gesendet, ${s.received_per_minute}/min empfangen` +
+      ` · ${s.refused} abgelehnt, ${s.unanswered} unbeantwortet` +
+      `${s.brake_gap > 0 ? ' · gebremst auf ' + s.brake_gap + ' s' : ''}` +
+      `${s.queue ? ' · ' + s.queue + ' in der Warteschlange' : ''}` +
+      `${s.silenced && s.silenced.length ? ' · ' + s.silenced.length +
+        ' stillgelegt (' + s.silenced.join(', ') + ')' : ''}`;
+    document.getElementById('link').className = 'dot' + (s.connected ? ' on' : '');
+    document.getElementById('linktext').textContent =
+      s.connected ? 'Gateway verbunden' : 'Gateway getrennt';
+    const f = await api('api/frames');
+    const box = document.getElementById('frames');
+    document.getElementById('framecount').textContent = f.frames.length;
+    box.innerHTML = f.frames.slice().reverse().map(x =>
+      `<div><span>${esc(x.time || '')} ${esc(x.frame)}` +
+      `${x.count > 1 ? ' <span style="color:var(--muted)">×' + esc(x.count) + '</span>' : ''}</span>` +
+      `<span>${esc(x.hint || '')}</span></div>`).join('');
+  } catch (e) { /* Ingress blinzelt beim Neustart */ }
+}
+
+async function sendFrame() {
+  const box = document.getElementById('frame');
+  const frame = box.value.trim();
+  if (!frame) return;
+  let r;
+  try {
+    r = await api('api/send', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify({frame})});
+  } catch (e) { toast('Keine Verbindung zum Add-on.'); return; }
+  if (r.error) { toast(r.error); return; }
+  box.value = '';
+  toast('Gesendet: ' + frame);
+  setTimeout(refresh, 600);
+}
+
+window.addEventListener('beforeunload', e => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+load();
+</script>
+</body>
+</html>

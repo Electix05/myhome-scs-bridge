@@ -1,0 +1,23 @@
+# Monthly proposals for everything the add-on depends on.  They go to the
+# development branch and pass the same checks as any other change.  A new base
+# image also fails tests/test_packaging.py on purpose: Python may change with it,
+# and that deserves a decision instead of a click.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /myhome_scs_mqtt
+    target-branch: entwicklung
+    schedule:
+      interval: monthly
+
+  - package-ecosystem: docker
+    directory: /myhome_scs_mqtt
+    target-branch: entwicklung
+    schedule:
+      interval: monthly
+
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: entwicklung
+    schedule:
+      interval: monthly

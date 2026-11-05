@@ -1,0 +1,69 @@
+name: MyHome SCS Bridge
+version: "1.23.1"
+slug: myhome_scs_bridge
+description: >-
+  BTicino/Legrand MyHome SCS via OpenWebNet with Home Assistant MQTT discovery -
+  the rewrite, runs side by side with the MyHome SCS MQTT Bridge
+arch:
+  - aarch64
+  - amd64
+init: false
+startup: application
+boot: auto
+# Supervisor API: MQTT credentials (services/mqtt) and "save & restart".
+hassio_api: true
+hassio_role: default
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:home-lightning-bolt-outline
+panel_title: MyHome SCS Bridge
+services:
+  - mqtt:need
+# /config inside the add-on = /addon_configs/local_myhome_scs_bridge on the host.
+map:
+  - addon_config:rw
+options:
+  gateway_host: ""
+  gateway_port: 20000
+  gateway_password: "12345"
+  gateway_auth: auto
+  mqtt_discovery_prefix: homeassistant
+  mqtt_base_topic: scs_bridge
+  devices_file: /config/devices.yaml
+  instance_id: scs_bridge
+  auto_discover: true
+  scan_on_start: true
+  scan_zones: 20
+  scan_meters: 8
+  scan_contacts: 20
+  poll_interval: 300
+  bus_brake_threshold: 3
+  bus_brake_window: 3.0
+  command_reserve: 1.5
+  dead_after: 3
+  log_level: info
+schema:
+  gateway_host: str
+  gateway_port: port
+  gateway_password: password?
+  gateway_auth: list(auto|none|open|hmac)
+  mqtt_host: str?
+  mqtt_port: port?
+  mqtt_username: str?
+  mqtt_password: password?
+  mqtt_discovery_prefix: str
+  mqtt_base_topic: str
+  devices_file: str
+  instance_id: "match(^[a-z0-9_]{1,32}$)"
+  name_prefix: str?
+  auto_discover: bool
+  scan_on_start: bool
+  scan_zones: int(0,99)
+  scan_meters: int(0,99)
+  scan_contacts: int(0,99)
+  poll_interval: int(0,86400)
+  bus_brake_threshold: int(1,50)
+  bus_brake_window: float(0.5,60)
+  command_reserve: float(0,4)
+  dead_after: int(0,20)
+  log_level: list(trace|debug|info|warning|error)

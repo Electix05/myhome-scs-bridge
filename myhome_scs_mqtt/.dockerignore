@@ -1,0 +1,6 @@
+# Nothing of this belongs into the image.
+**/__pycache__
+**/*.pyc
+**/._*
+**/.DS_Store
+**/.ruff_cache

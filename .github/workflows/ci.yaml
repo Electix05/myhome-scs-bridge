@@ -1,0 +1,88 @@
+# Runs on every change.  The tests run inside the image the add-on is built from,
+# on both architectures: same Python, same packages, same C library as on a device.
+name: CI
+
+on:
+  push:
+    branches: [entwicklung, main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Manifest and static checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check config.yaml against the app schema
+        uses: frenck/action-app-linter@v2.21.1
+        with:
+          path: ./myhome_scs_mqtt
+
+      - name: Static checks with ruff
+        run: >-
+          pipx run --spec ruff==0.16.8 ruff check --isolated --target-version py312
+          --select F,E9,B,PLE --ignore B905 myhome_scs_mqtt tests
+
+      # The image has no git, so the comparison with what git really takes runs here.
+      - name: Check the allowlist against real git
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet -r myhome_scs_mqtt/requirements.txt
+          "$RUNNER_TEMP/venv/bin/python" -m unittest tests.test_repository
+
+  test:
+    name: Tests in the image (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            os: ubuntu-24.04
+          - arch: aarch64
+            os: ubuntu-24.04-arm
+    steps:
+      # Docker only takes lower case, GitHub keeps the owner's name as it is written.
+      - name: Set the image name
+        env:
+          OWNER: ${{ github.repository_owner }}
+          ARCH: ${{ matrix.arch }}
+        run: echo "IMAGE=ghcr.io/${OWNER,,}/${ARCH}-myhome-scs-bridge" >> "$GITHUB_ENV"
+
+      - name: Check out the repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build the image, without publishing it
+        uses: home-assistant/builder/actions/build-image@2026.09.0
+        with:
+          arch: ${{ matrix.arch }}
+          container-registry-password: ${{ secrets.GITHUB_TOKEN }}
+          context: ./myhome_scs_mqtt
+          cosign: "false"
+          image: ${{ env.IMAGE }}
+          image-tags: ci
+          load: "true"
+          push: "false"
+          version: ci
+
+      # Read-only on purpose: a test that writes into the project would show here.
+      - name: Run all tests inside the image
+        run: >-
+          docker run --rm --entrypoint python3 -v "$PWD:/src:ro" -w /src
+          "$IMAGE:ci" -m unittest

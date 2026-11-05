@@ -1,0 +1,73 @@
+configuration:
+  gateway_host:
+    name: Gateway IP address
+    description: IP address of the OpenWebNet gateway (F461, MH201, F454, F455, MyHOMEServer1 ...). Required.
+  gateway_port:
+    name: Gateway port
+    description: OpenWebNet port, 20000 on virtually every gateway.
+  gateway_password:
+    name: OPEN password
+    description: The OPEN password of the gateway. The classic scheme (e.g. MH201) needs digits only. Leave empty if the gateway only filters by IP address.
+  gateway_auth:
+    name: Authentication
+    description: auto detects the scheme offered by the gateway. Force open (classic nonce) or hmac only for troubleshooting.
+  mqtt_host:
+    name: MQTT broker
+    description: Leave empty to use the broker configured in Home Assistant.
+  mqtt_port:
+    name: MQTT port
+    description: Only needed together with a manual broker address.
+  mqtt_username:
+    name: MQTT user
+    description: Only needed together with a manual broker address.
+  mqtt_password:
+    name: MQTT password
+    description: Only needed together with a manual broker address.
+  mqtt_discovery_prefix:
+    name: Discovery prefix
+    description: Must match the discovery prefix of the MQTT integration (default homeassistant).
+  mqtt_base_topic:
+    name: Base topic
+    description: Prefix of all state and command topics of this bridge. Do not set it to myhome while the MyHome SCS MQTT Bridge runs - both would clear each other's topics.
+  devices_file:
+    name: Device file
+    description: YAML file with the device definitions. Created with examples on first start. A second installation needs a file of its own, e.g. /config/devices_haus2.yaml.
+  instance_id:
+    name: Instance id
+    description: Only change this when the add-on runs more than once (one instance per MyHome installation). Lower case letters, digits and _, at most 32 characters; it must not contain myhome_scs_bridge. The id is part of every unique_id, of the discovery node and of the MQTT client id - changing it makes Home Assistant create all entities anew and their history starts over. For a second instance change it together with the base topic and the device file (see documentation).
+  name_prefix:
+    name: Name prefix
+    description: Put in front of every device name, e.g. "Haus 2" turns "Küche" into "Haus 2 Küche". Leave empty to keep the names unchanged. Handy with two installations in one Home Assistant.
+  auto_discover:
+    name: Automatic device detection
+    description: Creates entities for addresses that appear on the bus and are not in the device file.
+  scan_on_start:
+    name: Scan the bus at startup
+    description: Scans automatically as long as no device is known yet. The scan can always be started by hand from the Bus scan button.
+  scan_zones:
+    name: Heating zones to probe
+    description: Zones 1..N are asked for their temperature. 0 skips them.
+  scan_meters:
+    name: Energy meters to probe
+    description: Meters 51..5N are asked for their power. 0 skips them.
+  scan_contacts:
+    name: Dry contacts to probe
+    description: Contacts 31..3N are asked for their state. 0 skips them.
+  poll_interval:
+    name: Refresh interval (seconds)
+    description: How often all known devices are asked for their state. 0 disables polling.
+  bus_brake_threshold:
+    name: Brake - troubles
+    description: This many refused or unanswered frames within the time window make the add-on send more slowly. Refused capability probes never count. Provisional starting value 3 - to be fixed after the measurement on real hardware.
+  bus_brake_window:
+    name: Brake - time window (seconds)
+    description: Time window for the troubles above. Provisional starting value 3 seconds.
+  dead_after:
+    name: Silence an address after ... refusals
+    description: When an address is refused this many times in a row the add-on stops asking for it and shows it as unavailable in Home Assistant. It tries once every ten minutes; commands still go out at any time. 0 switches that off.
+  command_reserve:
+    name: Reserve for commands (frames per second)
+    description: This much of the bus stays free for commands from Home Assistant. Refresh, probes and the bus scan may only use the rest of the five frames per second. Higher = switching stays brisk even during a scan, requests take longer.
+  log_level:
+    name: Log level
+    description: trace logs every single OpenWebNet frame, debug among other things the waiting time of every frame and the brake.
