@@ -1,6 +1,6 @@
 # MyHome SCS Bridge
 
-Home-Assistant-App (früher „Add-on"), die eine **BTicino/Legrand-MyHome-SCS-Anlage** über **OpenWebNet** per **MQTT** in Home Assistant einbindet, ohne Cloud und ohne Custom-Component.
+Home-Assistant-App, die eine **BTicino/Legrand-MyHome-SCS-Anlage** über **OpenWebNet** per **MQTT** in Home Assistant einbindet, ohne Cloud und ohne Custom-Component.
 
 Aktuelle Version: 1.23.1. Änderungen stehen im [Changelog](myhome_scs_mqtt/CHANGELOG.md).
 
