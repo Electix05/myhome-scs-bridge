@@ -1,0 +1,56 @@
+# Traffic light for the nightly compatibility check of the MyHome SCS Bridge.
+#
+# Shows in Home Assistant whether the add-on still works with the current and the
+# coming Home Assistant versions - and warns as well when the nightly check has
+# silently stopped, which looks exactly like "everything fine" otherwise.
+#
+# Installation: see testgeraet/README.md.  Reads the public GitHub API without a
+# token, once an hour (the limit is 60 calls an hour).
+
+rest:
+  - resource: >-
+      https://api.github.com/repos/Electix05/myhome-scs-bridge/actions/workflows/ha-compat.yaml/runs?branch=main&status=completed&per_page=1
+    scan_interval: 3600
+    headers:
+      Accept: application/vnd.github+json
+      User-Agent: home-assistant-scs-bridge-ampel
+    sensor:
+      - name: SCS Bridge Ampel
+        unique_id: scs_bridge_ampel
+        icon: mdi:traffic-light
+        # gruen: the last night was fine.  rot: something broke.  veraltet: no
+        # finished run for three days - the nightly check has stopped.
+        value_template: >-
+          {% set runs = (value_json.get('workflow_runs') if value_json is mapping else none) or [] %}
+          {% if not runs %}unbekannt
+          {% elif (now() - as_datetime(runs[0].updated_at)).total_seconds() > 3 * 86400 %}veraltet
+          {% elif runs[0].conclusion == 'success' %}gruen
+          {% else %}rot
+          {% endif %}
+        json_attributes_path: "$.workflow_runs[0]"
+        json_attributes:
+          - conclusion
+          - updated_at
+          - html_url
+          - head_sha
+
+automation:
+  - id: scs_bridge_ampel_meldung
+    alias: SCS Bridge Ampel meldet ein Problem
+    triggers:
+      - trigger: state
+        entity_id: sensor.scs_bridge_ampel
+        to:
+          - rot
+          - veraltet
+    actions:
+      - action: persistent_notification.create
+        data:
+          notification_id: scs_bridge_ampel
+          title: "MyHome SCS Bridge: Kompatibilität prüfen"
+          message: >-
+            Die nächtliche Prüfung gegen Home Assistant meldet
+            "{{ trigger.to_state.state }}". Vor dem nächsten Home-Assistant-Update
+            bitte hier nachsehen:
+            {{ state_attr('sensor.scs_bridge_ampel', 'html_url') or
+               'https://github.com/Electix05/myhome-scs-bridge/actions' }}

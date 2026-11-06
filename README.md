@@ -2,6 +2,8 @@
 
 Home-Assistant-App, die eine **BTicino/Legrand-MyHome-SCS-Anlage** über **OpenWebNet** per **MQTT** in Home Assistant einbindet, ohne Cloud und ohne Custom-Component.
 
+[![Home Assistant compatibility](https://github.com/Electix05/myhome-scs-bridge/actions/workflows/ha-compat.yaml/badge.svg?branch=main)](https://github.com/Electix05/myhome-scs-bridge/actions/workflows/ha-compat.yaml)
+
 Aktuelle Version: 1.23.1. Änderungen stehen im [Changelog](myhome_scs_mqtt/CHANGELOG.md).
 
 ## Was sie kann
@@ -44,6 +46,8 @@ python3 -m venv .venv
 Die Tests brauchen weder Gateway noch Broker: `tests/fake_gateway.py` und `tests/fake_broker.py` laufen auf `127.0.0.1`.
 
 Bei jedem Push und bei jedem Pull Request baut GitHub das Image für beide Architekturen und führt alle Tests darin aus.
+
+Jede Nacht prüft GitHub außerdem gegen Home Assistant `stable`, `beta` und `dev`: Jede Discovery-Nachricht geht durch den echten Code von Home Assistant, und ein Gesamttest lässt das Add-on mit echtem Home Assistant und Mosquitto laufen (`tests/contract`, `tests/e2e`). Die Ampel für Home Assistant liegt in `testgeraet/`.
 
 Verweise auf `berichte/` und `WISSEN.md` im Code zeigen auf interne Unterlagen, die nicht in diesem Repository liegen.
 
