@@ -27,11 +27,12 @@ unbeantwortete Frames.
 
 ## Kurzanleitung
 
-1. Ordner als `/addons/myhome_scs_bridge` nach Home Assistant kopieren (Details
-   im Tab **Dokumentation**, Kapitel 1).
-2. Im Add-on-Store *Nach Updates suchen*, unter *Lokale Add-ons* installieren.
-3. In der Konfiguration `gateway_host` und `gateway_password` eintragen.
-4. Starten – beim ersten Start scannt das Add-on den Bus selbst.
+1. Im App-Store unter Menü ⋮ → *Repositories*
+   `https://github.com/Electix05/myhome-scs-bridge` eintragen und das Add-on
+   installieren. Umstieg von einer lokal installierten Fassung und der lokale Weg:
+   Tab **Dokumentation**, Kapitel 1.
+2. In der Konfiguration `gateway_host` und `gateway_password` eintragen.
+3. Starten – beim ersten Start scannt das Add-on den Bus selbst.
 
 Buslast: höchstens fünf Frames pro Sekunde; bei gehäuften Ablehnungen oder
 Stille bremst das Add-on zusätzlich (einstellbar, siehe Dokumentation).

@@ -20,19 +20,71 @@ Die **MyHome SCS Bridge** ist die Neufassung der *MyHome SCS MQTT Bridge*
 | Basis-Topic | `myhome` | `scs_bridge` |
 | `unique_id` | `myhome_scs_bridge_…` | `scs_bridge_…` |
 | Discovery | `homeassistant/<Typ>/<id>/config` | `homeassistant/<Typ>/scs_bridge/<id>/config` |
-| Gerätedatei auf dem Host | `/addon_configs/local_myhome_scs_mqtt/` | `/addon_configs/local_myhome_scs_bridge/` |
+| Gerätedatei auf dem Host | `/addon_configs/local_myhome_scs_mqtt/` | `/addon_configs/local_myhome_scs_bridge/`, aus dem Repository `/addon_configs/474ea02f_myhome_scs_bridge/` |
 
 Keines der beiden Add-ons liest, ändert oder löscht etwas vom anderen.
 
 ---
 
-## 1. Installation als lokales Add-on
+## 1. Installation
 
-Voraussetzungen: Home Assistant mit Supervisor, das Add-on **Mosquitto broker**
-mit der **MQTT**-Integration, Zugriff auf den Ordner `/addons` – entweder über
-das Add-on **Samba share** (Freigabe `addons`) oder über ein SSH-Add-on.
+Voraussetzungen: Home Assistant mit Supervisor und das Add-on **Mosquitto broker**
+mit der **MQTT**-Integration. Für den Umstieg (1.2) und den lokalen Weg (1.3–1.5)
+zusätzlich Zugriff auf die Ordner `/addons`, `/addon_configs` und `/share` – über
+das Add-on **Samba share** oder ein SSH-Add-on.
 
-### 1.1 Auf dem Mac packen
+### 1.1 Über das Repository (empfohlen)
+
+1. *Einstellungen → Apps → App-Store* (ältere Versionen: *Add-ons →
+   Add-on-Store*) → Menü ⋮ → **Repositories**.
+2. `https://github.com/Electix05/myhome-scs-bridge` eintragen – genau so, ohne `/`
+   am Ende – und **Hinzufügen**.
+3. Im Store erscheint der Bereich **MyHome SCS Bridge** mit dem Add-on. Falls
+   nicht: Menü ⋮ → **Nach Updates suchen**.
+4. **Installieren.** Das Add-on wird auf dem Gerät gebaut, wie beim lokalen Weg
+   (1.5, Schritt 3).
+5. Konfigurieren und starten wie in 1.5, Schritte 4 und 5.
+
+Neue Versionen zeigt Home Assistant danach selbst als Update an. Für Home
+Assistant ist das ein **anderes Add-on** als das lokal installierte: Es heißt intern
+`474ea02f_myhome_scs_bridge`, seine Gerätedatei liegt in
+`/addon_configs/474ea02f_myhome_scs_bridge/`. Den Namen zeigt die Info-Seite des
+Add-ons als Hostname (`474ea02f-myhome-scs-bridge`). Läuft schon die lokale Fassung,
+erst umsteigen wie in 1.2. Eine zweite Instanz (Kapitel 4) geht vorerst nur lokal.
+
+### 1.2 Umstieg vom lokalen Add-on
+
+Entities und Verlauf bleiben erhalten: Sie hängen an den `unique_id`s und damit an
+der Option `instance_id`, nicht am Add-on. Nicht von selbst mit kommen die Optionen,
+die Gerätedatei und was das alte Add-on am Bus gefunden, aber noch nicht in die
+Gerätedatei geschrieben hat.
+
+1. **In der Weboberfläche des alten Add-ons auf „Speichern & neu starten“
+   klicken.** Danach steht alles, was es kennt – auch die am Bus gefundenen
+   Geräte –, in seiner `devices.yaml`. **Nicht überspringen:** Das neue Add-on
+   räumt beim ersten Start alle Discovery-Einträge weg, die es nicht kennt. Home
+   Assistant entfernt die betroffenen Entities dann samt Raum und eigenem Namen.
+2. Optionen des alten Add-ons sichern: Tab **Konfiguration** → Menü ⋮ → **Als YAML
+   bearbeiten**, alles kopieren.
+3. Altes Add-on **stoppen** und **Beim Start ausführen** ausschalten. Beide
+   zugleich würden dieselben Entities melden, und ein MH201 nimmt nur vier
+   Sitzungen an.
+4. Neues Add-on installieren (1.1) und **einmal ohne Optionen starten.** Dabei
+   legt Home Assistant den Ordner `/addon_configs/474ea02f_myhome_scs_bridge/` an,
+   und das Add-on beendet sich gleich wieder mit `No gateway host configured` –
+   an dieser Stelle richtig so.
+5. `/addon_configs/local_myhome_scs_bridge/devices.yaml` (bzw. die Datei aus der
+   Option `devices_file`) in den neuen Ordner kopieren.
+6. Beim neuen Add-on: Tab **Konfiguration** → **Als YAML bearbeiten**, die gesicherten
+   Optionen einfügen, speichern. `instance_id` muss gleich bleiben.
+7. Starten und prüfen: im Protokoll `MyHome SCS Bridge … starting` und
+   `gateway link is up`, in Home Assistant dieselben Entities mit ihrem Verlauf.
+
+**Zurück:** neues Add-on stoppen, altes wieder starten. **Aufräumen** erst, wenn alles
+ein paar Tage läuft: altes Add-on deinstallieren, Ordner `/addons/myhome_scs_bridge`
+löschen.
+
+### 1.3 Lokal: auf dem Mac packen
 
 Im Terminal – `COPYFILE_DISABLE=1` verhindert die `._`-Dateien von macOS, über
 die der Supervisor stolpert; Cache-Ordner kommen nicht mit:
@@ -54,7 +106,7 @@ schadet das nicht – `.dockerignore` hält es aus dem Image. Entscheidend sind 
 `myhome_scs_bridge`: Der Ordner des alten Add-ons unter `/addons` heißt
 `myhome_scs_mqtt` und darf nicht überschrieben werden.
 
-### 1.2 Nach Home Assistant kopieren
+### 1.4 Lokal: nach Home Assistant kopieren
 
 1. `myhome_scs_bridge.tar.gz` in die Samba-Freigabe **`share`** legen (oder per
    `scp` nach `/share/`). Bewusst nicht nach `addons`: Dort soll nur der
@@ -77,7 +129,7 @@ Version das Add-on deinstallieren und neu installieren. **Vor dem
 Deinstallieren** `/addon_configs/local_myhome_scs_bridge/devices.yaml` sichern
 (z. B. nach `/share` kopieren).
 
-### 1.3 Installieren
+### 1.5 Lokal: installieren
 
 1. *Einstellungen → Add-ons* (in neueren Versionen *Apps*) → *Add-on-Store*
    (*App store*) → Menü ⋮ → **Nach Updates suchen**.
@@ -95,7 +147,7 @@ Deinstallieren** `/addon_configs/local_myhome_scs_bridge/devices.yaml` sichern
 Bleibt `gateway_host` leer, beendet sich das Add-on sofort mit
 `No gateway host configured - set 'gateway_host' in the add-on options`.
 
-### 1.4 Vor dem ersten Start bedenken
+### 1.6 Vor dem ersten Start bedenken
 
 - **Sitzungen am Gateway:** Das Add-on hält zwei Sitzungen. Ein **MH201 nimmt
   höchstens vier** an – laufen alte und neue Bridge gleichzeitig, ist er voll,
@@ -109,7 +161,8 @@ Bleibt `gateway_host` leer, beendet sich das Add-on sofort mit
   Assistant **eigene** Entities neben denen der alten Bridge. Wer die Namen
   übernehmen will: nach dem ersten Start das Add-on stoppen,
   `/addon_configs/local_myhome_scs_mqtt/devices.yaml` nach
-  `/addon_configs/local_myhome_scs_bridge/devices.yaml` kopieren, wieder
+  `/addon_configs/local_myhome_scs_bridge/devices.yaml` (aus dem Repository:
+  `/addon_configs/474ea02f_myhome_scs_bridge/devices.yaml`) kopieren, wieder
   starten. Vorher die alte Datei auf unechte Einträge prüfen: Die alte Bridge
   hat eine bloße Kontakt-Abfrage (z. B. `*#25*312##`) als Gerät gewertet, und
   „Speichern“ in ihrer Weboberfläche hat solche Einträge in die Datei
@@ -132,8 +185,8 @@ Hardware zu prüfen und den endgültigen Wert festzulegen.
 
 Mit `trace` wird das Protokoll schnell lang. Für die Auswertung das ganze
 Protokoll sichern – im Protokoll-Tab oder im Terminal (Add-on *Terminal & SSH*)
-mit `ha apps logs local_myhome_scs_bridge` (ältere Schreibweise
-`ha addons logs …`). Nach dem Test `log_level` wieder auf `info` stellen.
+mit `ha apps logs local_myhome_scs_bridge`, aus dem Repository
+`ha apps logs 474ea02f_myhome_scs_bridge` (ältere Schreibweise `ha addons logs …`). Nach dem Test `log_level` wieder auf `info` stellen.
 
 ### 2.2 Wo die Zahlen stehen
 
@@ -246,7 +299,7 @@ panel_title: MyHome SCS Bridge Haus 2
 
 Dann *Einstellungen → Add-ons → Add-on-Store* → Menü ⋮ → **Nach Updates
 suchen**. Unter **Lokale Add-ons** steht nun zusätzlich *MyHome SCS Bridge
-Haus 2*; installieren und starten wie in Kapitel 1.3.
+Haus 2*; installieren und starten wie in Kapitel 1.5.
 
 Bei jedem Update sind es zwei Ordner: neues Archiv entpacken, danach erneut
 `cp -r` und die drei Zeilen in der Kopie wieder anpassen. (Die Kopie liegt in
@@ -282,7 +335,7 @@ betreibt, kann sie ignorieren.
 - **Sitzungen am Gateway:** Jede Instanz hält **zwei** Sitzungen zu **ihrem**
   Gateway. Zwei Instanzen an zwei Gateways sind also je zwei – unkritisch. Ein
   **MH201 nimmt höchstens vier** Sitzungen an; zwei Instanzen auf dasselbe
-  Gateway zu richten füllt es vollständig (siehe Kapitel 1.4).
+  Gateway zu richten füllt es vollständig (siehe Kapitel 1.6).
 - **Ein Broker genügt.** Beide Instanzen melden sich am selben MQTT-Broker an,
   mit eigener Client-ID (`instance_id` + Rechnername).
 - **Die `instance_id` nachträglich zu ändern kostet die Historie.** Sie steckt
@@ -303,7 +356,7 @@ betreibt, kann sie ignorieren.
 | `mqtt_host` … `mqtt_password` | leer | eigener Broker oder Benutzer; leer = Broker aus Home Assistant |
 | `mqtt_discovery_prefix` | `homeassistant` | muss zum Präfix der MQTT-Integration passen |
 | `mqtt_base_topic` | `scs_bridge` | Präfix aller Status- und Kommando-Topics |
-| `devices_file` | `/config/devices.yaml` | Pfad im Add-on; auf dem Host `/addon_configs/local_myhome_scs_bridge/devices.yaml` |
+| `devices_file` | `/config/devices.yaml` | Pfad im Add-on; auf dem Host `/addon_configs/local_myhome_scs_bridge/devices.yaml`, aus dem Repository `/addon_configs/474ea02f_myhome_scs_bridge/devices.yaml` |
 | `instance_id` | `scs_bridge` | Kennung dieser Instanz: Präfix jeder `unique_id`, Discovery-Knoten, Teil der MQTT-Client-ID. Nur Kleinbuchstaben, Ziffern und `_`, höchstens 32 Zeichen, nicht `myhome_scs_bridge` enthalten. **Nur ändern, wenn das Add-on mehrfach läuft** (Kapitel 4) – eine Änderung legt alle Entities neu an |
 | `name_prefix` | leer | steht vor jedem Gerätenamen, z. B. `Haus 2` → „Haus 2 Küche". Leer = Namen unverändert |
 | `auto_discover` | `true` | unbekannte Bus-Adressen automatisch anlegen |

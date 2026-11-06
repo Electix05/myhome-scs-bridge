@@ -1,0 +1,5 @@
+# Makes this repository an app store for Home Assistant: Settings → Apps → App
+# store → ⋮ → Repositories, then add https://github.com/Electix05/myhome-scs-bridge
+# The Supervisor reads name (required) and url; see tests/test_repository.py.
+name: MyHome SCS Bridge
+url: https://github.com/Electix05/myhome-scs-bridge

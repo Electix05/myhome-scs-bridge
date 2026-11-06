@@ -185,7 +185,7 @@ class TestImage(unittest.TestCase):
         self.assertIn("--no-cache-dir", dockerfile)
         self.assertIn("--only-binary=:all:", dockerfile)
         self.assertRegex(dockerfile, r'CMD \[ "/run.sh" \]')
-        # DOCS.md 1.3 names the image the install pulls.
+        # DOCS.md 1.5 names the image the install pulls.
         self.assertIn(base, read("DOCS.md"))
 
     def test_run_script_hands_over_with_exec(self):

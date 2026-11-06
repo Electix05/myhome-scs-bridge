@@ -30,7 +30,13 @@ Dazu kommen ein Bus-Scan, eine Weboberfläche im Home-Assistant-Panel und der pa
 
 ## Installation
 
-Die Installation über den App-Store von Home Assistant wird gerade vorbereitet. Bis dahin lässt sich die App lokal installieren, siehe [`DOCS.md`](myhome_scs_mqtt/DOCS.md), Kapitel 1. Dort stehen auch alle Optionen und die Fehlersuche.
+In Home Assistant unter *Einstellungen → Apps → App-Store* → Menü ⋮ → *Repositories* diese Adresse eintragen:
+
+```
+https://github.com/Electix05/myhome-scs-bridge
+```
+
+Danach erscheint die App im Store. Home Assistant baut sie beim Installieren auf dem Gerät und zeigt neue Versionen als Update an. Der Umstieg von einer lokal installierten Fassung, der lokale Weg, alle Optionen und die Fehlersuche stehen in [`DOCS.md`](myhome_scs_mqtt/DOCS.md), Kapitel 1.
 
 ## Entwicklung
 

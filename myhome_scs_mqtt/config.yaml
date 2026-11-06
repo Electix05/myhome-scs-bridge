@@ -15,7 +15,8 @@ panel_icon: mdi:home-lightning-bolt-outline
 panel_title: MyHome SCS Bridge
 services:
   - mqtt:need
-# /config inside the add-on = /addon_configs/local_myhome_scs_bridge on the host.
+# /config inside the add-on = /addon_configs/<prefix>_myhome_scs_bridge on the host:
+# local_ when installed locally, 474ea02f_ from the GitHub repository.
 map:
   - addon_config:rw
 options:

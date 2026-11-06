@@ -183,6 +183,31 @@ def read_text(path: str) -> str:
         return handle.read()
 
 
+class TestStore(unittest.TestCase):
+    """What Home Assistant reads when this repository is added as an app store."""
+
+    def test_the_repository_file_holds_what_the_supervisor_reads(self):
+        """name is required, url optional (supervisor/store/validate.py).
+
+        Nothing else: a maintainer would name a person in a public repository.
+        """
+        config = yaml.safe_load(read_text(os.path.join(PROJECT_DIR, "repository.yaml")))
+        self.assertIsInstance(config.get("name"), str)
+        self.assertTrue(config["name"].strip())
+        self.assertEqual(set(config) - {"name", "url"}, set())
+        self.assertRegex(config.get("url", ""), r"^https://github\.com/[\w.-]+/[\w.-]+$")
+
+    def test_the_store_offers_exactly_one_app(self):
+        """The Supervisor takes every config.yaml, .yml or .json at any depth for an app.
+
+        A second one - a simulated gateway for the test device, say - would show up
+        in every installation's store.
+        """
+        apps = [path for path in published_files()
+                if re.search(r"(?:^|/)config\.(?:ya?ml|json)$", path.replace(os.sep, "/"))]
+        self.assertEqual(apps, ["myhome_scs_mqtt/config.yaml"])
+
+
 class TestAllowlist(unittest.TestCase):
     def test_everything_is_hidden_unless_it_is_named(self):
         rules = gitignore_rules()
