@@ -138,9 +138,11 @@ jobs:
   # A scheduled workflow of a public repository stops after 60 days without
   # activity.  Switching it on again every night keeps it from silently going
   # quiet; the traffic light in Home Assistant is the second line of defence.
+  # Also on a start by hand, so that it can be tried out; never on a push, where a
+  # Dependabot branch gets read access only and the job would fail.
   keep-alive:
     name: Keep the nightly run switched on
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
