@@ -6,12 +6,19 @@
 #     with a simulated gateway (tests/e2e/run_e2e.py)
 # Red on stable: do not update the installations.  Red on beta: about a week left.
 # Red on dev: an early hint, possibly Home Assistant's own bug.
+# Started by hand with "probealarm", the run fails on purpose: a fire drill for the
+# whole alarm chain - this check, the mail and the traffic light in Home Assistant.
 name: Home Assistant compatibility
 
 on:
   schedule:
     - cron: "37 2 * * *"
   workflow_dispatch:
+    inputs:
+      probealarm:
+        description: "Fire drill: misspell one discovery key on purpose - the run must turn red"
+        type: boolean
+        default: false
   push:
     paths:
       - tests/contract/**
@@ -22,8 +29,15 @@ on:
 permissions:
   contents: read
 
+# bash with pipefail: a failing command in a pipe fails the step.
+defaults:
+  run:
+    shell: bash
+
+# On main every run finishes: the traffic light reads the last finished run there,
+# and a cancelled one would show as red.  Elsewhere a newer push replaces the run.
 concurrency:
-  group: ha-compat-${{ github.ref }}
+  group: ha-compat-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -34,14 +48,21 @@ jobs:
     outputs:
       tags: ${{ steps.tags.outputs.tags }}
     steps:
-      # Outside the beta weeks, beta is stable: the same image only runs once.
+      # Outside the beta weeks, beta is stable: the same image only runs once.  A tag
+      # that cannot be read right now is kept: its own job pulls it with retries and,
+      # if it really is gone, fails there - a tag is never dropped because of an error.
       - name: Drop tags that point at the same image
         id: tags
         run: |
           tags=()
           seen=""
           for tag in stable beta dev; do
-            digest="$(docker buildx imagetools inspect --raw "ghcr.io/home-assistant/home-assistant:$tag" | sha256sum | cut -d' ' -f1)"
+            if manifest="$(docker buildx imagetools inspect --raw "ghcr.io/home-assistant/home-assistant:$tag")"; then
+              digest="$(printf '%s' "$manifest" | sha256sum | cut -d' ' -f1)"
+            else
+              echo "::warning::cannot read the image tag $tag - it gets a job of its own"
+              digest="unreadable-$tag"
+            fi
             echo "$tag: $digest"
             case " $seen " in
               *" $digest "*) echo "  same image as an earlier tag - skipped" ;;
@@ -86,12 +107,22 @@ jobs:
           push: "false"
           version: ci
 
+      # A hiccup of the registry is no failure of ours: three attempts.
       - name: Pull Home Assistant
-        run: docker pull --quiet "$HA_IMAGE"
+        run: |
+          for attempt in 1 2 3; do
+            docker pull --quiet "$HA_IMAGE" && exit 0
+            echo "::warning::pulling $HA_IMAGE failed (attempt $attempt)"
+            sleep $((attempt * 20))
+          done
+          echo "::error::cannot pull $HA_IMAGE"
+          exit 1
 
       - name: Contract - every discovery message through Home Assistant's code
+        env:
+          PROBEALARM: ${{ inputs.probealarm && '1' || '' }}
         run: >-
-          docker run --rm --entrypoint python3 -e PYTHONDONTWRITEBYTECODE=1
+          docker run --rm --entrypoint python3 -e PYTHONDONTWRITEBYTECODE=1 -e PROBEALARM
           -v "$PWD:/src:ro" -w /src "$HA_IMAGE" tests/contract/check_discovery.py
 
       - name: Prepare the end-to-end run

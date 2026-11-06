@@ -4,8 +4,10 @@
 name: scs-bridge-e2e
 
 services:
+  # A fixed version: the broker changes only through a Dependabot proposal, never
+  # under a nightly run.  (The tag "2" moved to 2.1 without a word.)
   mosquitto:
-    image: eclipse-mosquitto:2
+    image: eclipse-mosquitto:2.1.2-alpine
     command: ["mosquitto", "-c", "/mosquitto-no-auth.conf"]
 
   fake-gateway:

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import unittest
 from typing import Any
 
@@ -54,6 +55,24 @@ MUST_BE_COVERED = {
 
 # Values Home Assistant rewrites into its own spelling, with the same meaning.
 NORMALISED = {("temperature_unit", "C"): "°C"}
+
+# The fire drill (PROBEALARM=1, the "probealarm" input of ha-compat.yaml): one key is
+# misspelt on purpose, the way a rename in Home Assistant would leave it.  Home
+# Assistant drops it without a word, so the run has to turn red - if it does not, the
+# alarm chain is broken somewhere: this check, the mail, or the traffic light.
+DRILL_KEY = ("color_temp_kelvin", "color_temp_kelvn")
+
+
+def drill(messages: list[tuple[str, str, dict[str, Any]]]) -> list[tuple[str, str, dict[str, Any]]]:
+    """``messages`` with DRILL_KEY misspelt in the first payload that has it."""
+    right, wrong = DRILL_KEY
+    for index, (component, object_id, payload) in enumerate(messages):
+        if right in payload:
+            print(f"PROBEALARM: {component}/{object_id} announces {wrong!r} instead of {right!r}"
+                  " - this run has to fail", flush=True)
+            spoilt = {(wrong if key == right else key): value for key, value in payload.items()}
+            return [*messages[:index], (component, object_id, spoilt), *messages[index + 1:]]
+    raise RuntimeError(f"no message has {right!r} - the drill would test nothing")
 
 
 def schema_of(component: str) -> Any:
@@ -105,6 +124,8 @@ class TestDiscoveryMessages(unittest.TestCase):
     def setUpClass(cls) -> None:
         print(f"Home Assistant {HA_VERSION}", flush=True)
         cls.messages = variants.announced()
+        if os.environ.get("PROBEALARM") == "1":
+            cls.messages = drill(cls.messages)
 
     def test_every_device_type_of_the_bridge_is_exercised(self):
         self.assertEqual(variants.uncovered_sections(), set())

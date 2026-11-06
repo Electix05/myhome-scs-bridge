@@ -2,7 +2,8 @@
 #
 # Shows in Home Assistant whether the add-on still works with the current and the
 # coming Home Assistant versions - and warns as well when the nightly check has
-# silently stopped, which looks exactly like "everything fine" otherwise.
+# silently stopped, or when its result cannot be read: both look exactly like
+# "everything fine" otherwise.
 #
 # Installation: see testgeraet/README.md.  Reads the public GitHub API without a
 # token, once an hour (the limit is 60 calls an hour).
@@ -19,7 +20,9 @@ rest:
         unique_id: scs_bridge_ampel
         icon: mdi:traffic-light
         # gruen: the last night was fine.  rot: something broke.  veraltet: no
-        # finished run for three days - the nightly check has stopped.
+        # finished run for three days - the nightly check has stopped.  unbekannt:
+        # GitHub answered without a finished run, e.g. with its rate limit (HTTP 403)
+        # or "not found"; without any answer the sensor is unavailable instead.
         value_template: >-
           {% set runs = (value_json.get('workflow_runs') if value_json is mapping else none) or [] %}
           {% if not runs %}unbekannt
@@ -35,6 +38,9 @@ rest:
           - head_sha
 
 automation:
+  # rot and veraltet at once.  A result that cannot be read only after twelve
+  # hours: a restart of Home Assistant or a short outage must not raise an alarm,
+  # a lasting one must - an unreadable result is unknown, not green.
   - id: scs_bridge_ampel_meldung
     alias: SCS Bridge Ampel meldet ein Problem
     triggers:
@@ -43,14 +49,38 @@ automation:
         to:
           - rot
           - veraltet
+      - trigger: state
+        entity_id: sensor.scs_bridge_ampel
+        to:
+          - unbekannt
+          - unavailable
+          - unknown
+        for: "12:00:00"
     actions:
       - action: persistent_notification.create
         data:
           notification_id: scs_bridge_ampel
           title: "MyHome SCS Bridge: Kompatibilität prüfen"
           message: >-
+            {% if trigger.to_state.state in ['rot', 'veraltet'] %}
             Die nächtliche Prüfung gegen Home Assistant meldet
-            "{{ trigger.to_state.state }}". Vor dem nächsten Home-Assistant-Update
-            bitte hier nachsehen:
+            "{{ trigger.to_state.state }}".
+            {% else %}
+            Die Ampel kann das Ergebnis der nächtlichen Prüfung seit zwölf Stunden
+            nicht lesen. Es ist damit unbekannt, nicht grün.
+            {% endif %}
+            Vor dem nächsten Home-Assistant-Update bitte hier nachsehen:
             {{ state_attr('sensor.scs_bridge_ampel', 'html_url') or
                'https://github.com/Electix05/myhome-scs-bridge/actions' }}
+
+  # Back to green: the notification goes away by itself.
+  - id: scs_bridge_ampel_entwarnung
+    alias: SCS Bridge Ampel ist wieder grün
+    triggers:
+      - trigger: state
+        entity_id: sensor.scs_bridge_ampel
+        to: gruen
+    actions:
+      - action: persistent_notification.dismiss
+        data:
+          notification_id: scs_bridge_ampel

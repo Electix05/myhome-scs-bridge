@@ -56,8 +56,9 @@ DEVICES: dict[str, list[dict[str, Any]]] = {
 TEACH_FRAMES = ("*#4*2*60*54##",)
 
 
-def build_registry(gateway_host: str = "192.0.2.10") -> Registry:
-    """The registry the bridge would build from DEVICES."""
+def build_registry(gateway_host: str = "192.0.2.10",
+                   teach_frames: tuple[str, ...] = TEACH_FRAMES) -> Registry:
+    """The registry the bridge would build from DEVICES, after hearing ``teach_frames``."""
     context = Context(
         base_topic=BASE_TOPIC,
         discovery_prefix=DISCOVERY_PREFIX,
@@ -70,17 +71,18 @@ def build_registry(gateway_host: str = "192.0.2.10") -> Registry:
     registry.register(BridgeStatus(context, {"where": gateway_host,
                                              "name": "MyHome SCS Bridge"}))
     registry.build(DEVICES, [])
-    for frame in TEACH_FRAMES:
+    for frame in teach_frames:
         message = msg.parse(frame)
         for entity in registry.route(message):
             entity.on_own(message)
     return registry
 
 
-def announced(gateway_host: str = "192.0.2.10") -> list[tuple[str, str, dict[str, Any]]]:
+def announced(gateway_host: str = "192.0.2.10",
+              teach_frames: tuple[str, ...] = TEACH_FRAMES) -> list[tuple[str, str, dict[str, Any]]]:
     """Every discovery message: (component, object id, payload)."""
     messages = []
-    for entity in build_registry(gateway_host).entities:
+    for entity in build_registry(gateway_host, teach_frames).entities:
         messages.extend(entity.discovery())
     return messages
 

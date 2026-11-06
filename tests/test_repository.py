@@ -345,7 +345,7 @@ class TestWorkflows(unittest.TestCase):
         config = yaml.safe_load(read_text(os.path.join(PROJECT_DIR, ".github", "dependabot.yml")))
         updates = config["updates"]
         self.assertEqual({entry["package-ecosystem"] for entry in updates},
-                         {"pip", "docker", "github-actions"})
+                         {"pip", "docker", "docker-compose", "github-actions"})
         for entry in updates:
             with self.subTest(ecosystem=entry["package-ecosystem"]):
                 self.assertEqual(entry["target-branch"], "entwicklung")

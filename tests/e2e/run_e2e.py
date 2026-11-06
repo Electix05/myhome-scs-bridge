@@ -30,12 +30,22 @@ from pathlib import Path
 from typing import Any, Callable
 
 import yaml
+from websockets.exceptions import WebSocketException
 from websockets.sync.client import connect
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "contract"))
 
 import variants  # noqa: E402
+from myhome_scs_mqtt.app.own import messages as msg  # noqa: E402
+from myhome_scs_mqtt.app.own.gateway import KEEPALIVE_FRAME  # noqa: E402
+from myhome_scs_mqtt.app.scan import ScanOptions, build_plan  # noqa: E402
+
+# The job may run 45 minutes.  The checks stop themselves well before that, so that
+# a run that hangs somewhere still gets to print the logs needed to find out why.
+RUN_LIMIT = 30 * 60
+RUN_DEADLINE = time.monotonic() + RUN_LIMIT
+COMPOSE_TIMEOUT = 300
 
 HA_URL = "http://127.0.0.1:8123"
 WS_URL = "ws://127.0.0.1:8123/api/websocket"
@@ -65,10 +75,23 @@ OPTIONS = {
 }
 
 # A line in Home Assistant's log that concerns us: a warning or an error about MQTT
-# or about this add-on.  Anything else in there is somebody else's business.
+# or about this add-on.  Anything else in there is somebody else's business - that
+# includes deprecation warnings: the ones about MQTT carry "mqtt" in the logger name
+# and are caught here, and Home Assistant also files them as repair issues.
 CONCERNS_US = re.compile(r"\b(WARNING|ERROR|CRITICAL)\b.*(mqtt|scs_bridge)", re.IGNORECASE)
 # Expected while the checks restart the parts on purpose.
 EXPECTED_NOISE: tuple[re.Pattern[str], ...] = ()
+# Written into Home Assistant's log through its own logging (system_log.write) at the
+# end of the run.  It has to come out of the log again and be caught by CONCERNS_US -
+# otherwise the log check reads the wrong thing and would pass on nothing.
+CONTROL_LOGGER = "scs_bridge.e2e"
+CONTROL_MESSAGE = "control sample of the end-to-end run"
+# A line of the add-on's own log that reports a problem (format: app/__main__.py).
+BRIDGE_PROBLEM = re.compile(r" (ERROR|CRITICAL) |Traceback")
+
+
+class OutOfTime(Exception):
+    """The run as a whole took longer than RUN_LIMIT."""
 
 
 # --------------------------------------------------------------------- helpers
@@ -79,19 +102,37 @@ def log(text: str) -> None:
 
 def compose(*args: str, check: bool = True) -> str:
     result = subprocess.run(["docker", "compose", "-f", str(COMPOSE_FILE), *args],
-                            capture_output=True, text=True, timeout=900, check=False)
+                            capture_output=True, text=True, timeout=COMPOSE_TIMEOUT, check=False)
     if check and result.returncode:
         raise RuntimeError(f"docker compose {' '.join(args)} failed:\n{result.stderr}")
     return result.stdout
 
 
+def pull(service: str, attempts: int = 3) -> None:
+    """Download the image of ``service``: a hiccup of the registry is no failure of ours."""
+    for attempt in range(1, attempts + 1):
+        try:
+            compose("pull", "--quiet", service)
+            return
+        except RuntimeError as err:
+            if attempt == attempts:
+                raise
+            log(f"     note: pulling {service} failed (attempt {attempt}): {err}")
+            time.sleep(20 * attempt)
+
+
 def wait_for(probe: Callable[[], Any], timeout: float, interval: float = 1.0) -> Any:
-    """The first truthy answer of ``probe`` within ``timeout`` seconds, else None."""
+    """The first truthy answer of ``probe`` within ``timeout`` seconds, else None.
+
+    Raises OutOfTime once the whole run has used up RUN_LIMIT.
+    """
     deadline = time.monotonic() + timeout
     while True:
+        if time.monotonic() >= RUN_DEADLINE:
+            raise OutOfTime(f"the checks ran longer than {RUN_LIMIT // 60} minutes")
         try:
             value = probe()
-        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError, WebSocketException):
             value = None        # not up yet, or the thing is not there yet
         if value:
             return value
@@ -117,6 +158,17 @@ def number(text: Any) -> float | None:
 def close_to(values: Any, expected: list[float], tolerance: float = 1.0) -> bool:
     return (isinstance(values, (list, tuple)) and len(values) == len(expected)
             and all(abs(float(a) - b) <= tolerance for a, b in zip(values, expected, strict=True)))
+
+
+def scan_only_frames() -> set[str]:
+    """The frames only a bus scan sends with OPTIONS - no keepalive, no refresh round."""
+    plan = build_plan(ScanOptions(zones=OPTIONS["scan_zones"], meters=OPTIONS["scan_meters"],
+                                  contacts=OPTIONS["scan_contacts"], deep=False))
+    sent_anyway = {KEEPALIVE_FRAME, msg.status_request(msg.WHO_LIGHTING, "0")}
+    for entity in variants.build_registry(GATEWAY_HOST).entities:
+        sent_anyway.update(entity.poll_frames())
+        sent_anyway.update(entity.probe_frames())
+    return {frame for phase in plan for frame in phase.frames} - sent_anyway
 
 
 # ---------------------------------------------------------- Home Assistant
@@ -254,7 +306,13 @@ class Report:
     def __init__(self) -> None:
         self.failures: list[str] = []
 
-    def check(self, what: str, ok: Any, detail: str = "") -> bool:
+    def check(self, what: str, ok: Any, detail: str | Callable[[], str] = "") -> bool:
+        """Log one check.  A callable ``detail`` only runs when the check failed."""
+        if not ok and callable(detail):
+            try:
+                detail = detail()
+            except Exception as err:  # noqa: BLE001 - a broken detail must not hide the failure
+                detail = f"(no detail: {type(err).__name__}: {err})"
         log(f"{'ok  ' if ok else 'FAIL'} {what}" + (f"  ->  {detail}" if detail and not ok else ""))
         if not ok:
             self.failures.append(f"{what}: {detail}" if detail else what)
@@ -320,6 +378,8 @@ HA_TO_BUS: list[tuple[str, str, str, str, dict[str, Any], str]] = [
 
 RELAY = "scs_bridge_1_11"
 LINK = "scs_bridge_link"
+SCAN_STATE = "scs_bridge_scan"
+SCAN_BUTTON = "scs_bridge_scan_button"
 
 
 class EndToEnd:
@@ -328,7 +388,12 @@ class EndToEnd:
         self.ha = HomeAssistant()
         self.report = Report()
         self.ids: dict[str, str] = {}
-        self.expected = [payload["unique_id"] for _c, _o, payload in variants.announced(GATEWAY_HOST)]
+        announced = variants.announced(GATEWAY_HOST)
+        self.expected = [payload["unique_id"] for _c, _o, payload in announced]
+        self.component_of = {payload["unique_id"]: component for component, _o, payload in announced}
+        # Entities that only appear once the bus has told the bridge about them.
+        self.taught = set(self.expected) - {
+            payload["unique_id"] for _c, _o, payload in variants.announced(GATEWAY_HOST, teach_frames=())}
 
     # -------------------------------------------------------------- set-up
 
@@ -344,6 +409,7 @@ class EndToEnd:
 
     def start(self) -> None:
         log("== Start: broker, simulated gateway, add-on, Home Assistant")
+        pull("mosquitto")       # the only image that comes from a registry at this point
         compose("up", "-d")
         up = wait_for(lambda: self.ha.request("GET", "/api/onboarding", auth=False) is not None, 600, 3)
         if not up:
@@ -358,26 +424,23 @@ class EndToEnd:
     # -------------------------------------------------------------- checks
 
     def check_entities(self) -> bool:
-        taught = {payload["unique_id"] for _c, _o, payload in variants.announced(GATEWAY_HOST)} - {
-            payload["unique_id"] for entity in _registry_without_teaching().entities
-            for _c, _o, payload in entity.discovery()}
-        first = [uid for uid in self.expected if uid not in taught]
+        first = [uid for uid in self.expected if uid not in self.taught]
         found = wait_for(lambda: (ids := self.ha.entities()) and all(uid in ids for uid in first)
                          and ids, 180, 3)
         if not self.report.check(f"Home Assistant created all {len(first)} entities", found,
-                                 f"missing: {sorted(set(first) - set(self.ha.entities()))}"):
+                                 lambda: f"missing: {sorted(set(first) - set(self.ha.entities()))}"):
             return False
         wait_for(lambda: gateway({"emit": "*#4*0##"}).get("event_sessions"), 60)
         for frame in variants.TEACH_FRAMES:
             gateway({"emit": frame})
-        found = wait_for(lambda: (ids := self.ha.entities()) and all(uid in ids for uid in taught)
+        found = wait_for(lambda: (ids := self.ha.entities()) and all(uid in ids for uid in self.taught)
                          and ids, 60, 2)
         self.report.check("entities learned from the bus appear as well", found,
-                          f"missing: {sorted(taught - set(self.ha.entities()))}")
+                          lambda: f"missing: {sorted(self.taught - set(self.ha.entities()))}")
         self.ids = self.ha.entities()
         for uid in self.expected:
             entity_id = self.ids.get(uid, "")
-            component = next(c for c, _o, p in variants.announced(GATEWAY_HOST) if p["unique_id"] == uid)
+            component = self.component_of[uid]
             if entity_id and not entity_id.startswith(component + "."):
                 self.report.check(f"{uid} is a {component}", False, entity_id)
         return True
@@ -395,14 +458,18 @@ class EndToEnd:
     def entity(self, uid: str) -> dict[str, Any] | None:
         return self.ha.states().get(self.ids.get(uid, ""))
 
+    def not_available(self) -> list[str]:
+        """The expected entities without a state or with "unavailable" - one request for all."""
+        states = self.ha.states()
+        return [uid for uid in self.expected
+                if states.get(self.ids.get(uid, ""), {}).get("state") in (None, "unavailable")]
+
     def check_available(self) -> None:
         linked = wait_for(lambda: (state := self.entity(LINK)) and is_on(state), 90, 2)
         self.report.check("the gateway link shows up as connected", linked)
-        unavailable = wait_for(lambda: not [uid for uid in self.expected
-                                            if (self.entity(uid) or {}).get("state") == "unavailable"]
-                               or None, 60, 2)
-        missing = [uid for uid in self.expected if (self.entity(uid) or {}).get("state") == "unavailable"]
-        self.report.check("no entity is unavailable", unavailable or not missing, f"{missing}")
+        wait_for(lambda: not self.not_available(), 60, 2)
+        missing = self.not_available()
+        self.report.check("no entity is unavailable or without a state", not missing, f"{missing}")
 
     def check_bus_to_ha(self) -> None:
         log("== Bus -> Home Assistant")
@@ -411,7 +478,7 @@ class EndToEnd:
                 gateway({"emit": frame})
             state = wait_for(lambda uid=uid, expected=expected: (s := self.entity(uid)) and expected(s)
                              and s, 20, 0.5)
-            self.report.check(what, state, f"{uid}: {self.entity(uid)}")
+            self.report.check(what, state, lambda uid=uid: f"{uid}: {self.entity(uid)}")
 
     def check_ha_to_bus(self) -> None:
         log("== Home Assistant -> bus")
@@ -419,7 +486,8 @@ class EndToEnd:
             gateway({"clear": True})
             self.ha.call(domain, service, {"entity_id": self.ids.get(uid, uid), **data})
             arrived = wait_for(lambda frame=frame: frame in gateway({"frames": True})["frames"], 20, 0.5)
-            self.report.check(what, arrived, f"expected {frame}, got {gateway({'frames': True})['frames']}")
+            self.report.check(what, arrived,
+                              lambda frame=frame: f"expected {frame}, got {gateway({'frames': True})['frames']}")
 
     def published_discoveries(self) -> int:
         return compose("logs", "--no-color", "bridge").count("Published MQTT discovery")
@@ -457,15 +525,33 @@ class EndToEnd:
                           wait_for(lambda: (s := self.entity(LINK)) and is_on(s), 180, 3))
 
     def check_scan_button(self) -> None:
+        log("== Bus scan")
         gateway({"clear": True})
-        self.ha.call("button", "press", {"entity_id": self.ids.get("scs_bridge_scan_button")})
-        self.report.check("the scan button starts a bus scan",
-                          wait_for(lambda: gateway({"frames": True})["frames"], 30, 1))
+        self.ha.call("button", "press", {"entity_id": self.ids.get(SCAN_BUTTON)})
+        # Only a frame that nothing but a scan sends proves it: the keepalive, and right
+        # after the gateway's restart a whole refresh round, cross the same session.
+        scan_only = scan_only_frames()
+        started = wait_for(lambda: scan_only & set(gateway({"frames": True})["frames"]), 60, 1)
+        self.report.check("the scan button starts a bus scan", started,
+                          lambda: f"none of {sorted(scan_only)} arrived")
+        finished = wait_for(lambda: (state := self.entity(SCAN_STATE))
+                            and state["state"].startswith("fertig") and state, 180, 2)
+        self.report.check("the scan finishes and says so in Home Assistant", finished,
+                          lambda: f"{self.entity(SCAN_STATE)}")
 
     def check_logs(self) -> None:
         log("== Logs and repairs")
-        lines = [line for line in compose("logs", "--no-color", "homeassistant").splitlines()
-                 if CONCERNS_US.search(line)
+        self.ha.call("system_log", "write", {"message": CONTROL_MESSAGE, "level": "warning",
+                                              "logger": CONTROL_LOGGER})
+        ha_log = (wait_for(lambda: (text := compose("logs", "--no-color", "homeassistant"))
+                           and CONTROL_MESSAGE in text and text, 30, 1)
+                  or compose("logs", "--no-color", "homeassistant"))
+        control = [line for line in ha_log.splitlines() if CONTROL_MESSAGE in line]
+        self.report.check("the log check sees a warning written into Home Assistant's log",
+                          control and all(CONCERNS_US.search(line) for line in control),
+                          f"{len(ha_log)} characters read, control sample: {control}")
+        lines = [line for line in ha_log.splitlines()
+                 if CONCERNS_US.search(line) and CONTROL_MESSAGE not in line
                  and not any(pattern.search(line) for pattern in EXPECTED_NOISE)]
         self.report.check("Home Assistant logs no warning about MQTT or the add-on", not lines,
                           "\n    ".join([""] + lines[:20]))
@@ -473,7 +559,7 @@ class EndToEnd:
                   if issue.get("domain") == "mqtt" or "scs_bridge" in json.dumps(issue)]
         self.report.check("no repair issue about MQTT or the add-on", not issues, f"{issues}")
         problems = [line for line in compose("logs", "--no-color", "bridge").splitlines()
-                    if " ERROR " in line or "Traceback" in line]
+                    if BRIDGE_PROBLEM.search(line)]
         self.report.check("the add-on logs no error", not problems, "\n    ".join([""] + problems[:20]))
 
     # ----------------------------------------------------------------- run
@@ -490,28 +576,19 @@ class EndToEnd:
                 self.check_restarts()
                 self.check_scan_button()
             self.check_logs()
-        except RuntimeError as err:
-            self.report.check("the end-to-end run itself", False, str(err))
+        except Exception as err:  # noqa: BLE001 - whatever happened, the logs below must be printed
+            self.report.check("the end-to-end run itself", False, f"{type(err).__name__}: {err}")
         if self.report.failures:
             log("\n== The end of the logs")
-            for service in ("homeassistant", "bridge", "fake-gateway"):
+            for service in ("homeassistant", "bridge", "fake-gateway", "mosquitto"):
                 log(f"--- {service}")
-                log(compose("logs", "--no-color", "--tail", "60", service, check=False))
+                log(compose("logs", "--no-color", "--tail", "200", service, check=False))
             log(f"\n{len(self.report.failures)} check(s) failed:")
             for failure in self.report.failures:
                 log(f"  - {failure}")
             return 1
         log("\nAll end-to-end checks passed.")
         return 0
-
-
-def _registry_without_teaching() -> Any:
-    """The registry before the bus taught it anything (TEACH_FRAMES)."""
-    taught, variants.TEACH_FRAMES = variants.TEACH_FRAMES, ()
-    try:
-        return variants.build_registry(GATEWAY_HOST)
-    finally:
-        variants.TEACH_FRAMES = taught
 
 
 def main() -> int:
