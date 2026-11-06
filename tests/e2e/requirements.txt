@@ -1,0 +1,2 @@
+# For run_e2e.py, next to the add-on's own requirements.
+websockets==17.4

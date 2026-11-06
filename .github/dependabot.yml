@@ -10,6 +10,12 @@ updates:
     schedule:
       interval: monthly
 
+  - package-ecosystem: pip
+    directory: /tests/e2e
+    target-branch: entwicklung
+    schedule:
+      interval: monthly
+
   - package-ecosystem: docker
     directory: /myhome_scs_mqtt
     target-branch: entwicklung

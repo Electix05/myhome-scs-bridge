@@ -1,0 +1,121 @@
+# The early warning: every night against the Home Assistant images stable, beta and
+# dev.  Two checks per image:
+#   - contract: every discovery message through Home Assistant's own code - nothing
+#     refused, no key silently dropped (tests/contract/check_discovery.py)
+#   - end-to-end: the add-on image against a real Home Assistant and a real broker,
+#     with a simulated gateway (tests/e2e/run_e2e.py)
+# Red on stable: do not update the installations.  Red on beta: about a week left.
+# Red on dev: an early hint, possibly Home Assistant's own bug.
+name: Home Assistant compatibility
+
+on:
+  schedule:
+    - cron: "37 2 * * *"
+  workflow_dispatch:
+  push:
+    paths:
+      - tests/contract/**
+      - tests/e2e/**
+      - tests/fake_gateway.py
+      - .github/workflows/ha-compat.yaml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ha-compat-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  images:
+    name: Which Home Assistant images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      tags: ${{ steps.tags.outputs.tags }}
+    steps:
+      # Outside the beta weeks, beta is stable: the same image only runs once.
+      - name: Drop tags that point at the same image
+        id: tags
+        run: |
+          tags=()
+          seen=""
+          for tag in stable beta dev; do
+            digest="$(docker buildx imagetools inspect --raw "ghcr.io/home-assistant/home-assistant:$tag" | sha256sum | cut -d' ' -f1)"
+            echo "$tag: $digest"
+            case " $seen " in
+              *" $digest "*) echo "  same image as an earlier tag - skipped" ;;
+              *) tags+=("$tag"); seen="$seen $digest" ;;
+            esac
+          done
+          echo "tags=$(printf '%s\n' "${tags[@]}" | jq -R . | jq -cs .)" >> "$GITHUB_OUTPUT"
+
+  check:
+    name: Home Assistant ${{ matrix.tag }}
+    needs: images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        tag: ${{ fromJSON(needs.images.outputs.tags) }}
+    env:
+      HA_TAG: ${{ matrix.tag }}
+      HA_IMAGE: ghcr.io/home-assistant/home-assistant:${{ matrix.tag }}
+    steps:
+      - name: Set the image name
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: echo "IMAGE=ghcr.io/${OWNER,,}/amd64-myhome-scs-bridge" >> "$GITHUB_ENV"
+
+      - name: Check out the repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build the add-on image, without publishing it
+        uses: home-assistant/builder/actions/build-image@2026.09.0
+        with:
+          arch: amd64
+          container-registry-password: ${{ secrets.GITHUB_TOKEN }}
+          context: ./myhome_scs_mqtt
+          cosign: "false"
+          image: ${{ env.IMAGE }}
+          image-tags: ci
+          load: "true"
+          push: "false"
+          version: ci
+
+      - name: Pull Home Assistant
+        run: docker pull --quiet "$HA_IMAGE"
+
+      - name: Contract - every discovery message through Home Assistant's code
+        run: >-
+          docker run --rm --entrypoint python3 -e PYTHONDONTWRITEBYTECODE=1
+          -v "$PWD:/src:ro" -w /src "$HA_IMAGE" tests/contract/check_discovery.py
+
+      - name: Prepare the end-to-end run
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet -r myhome_scs_mqtt/requirements.txt -r tests/e2e/requirements.txt
+
+      - name: End-to-end - add-on, broker and Home Assistant together
+        env:
+          BRIDGE_IMAGE: ${{ env.IMAGE }}:ci
+        run: '"$RUNNER_TEMP/venv/bin/python" tests/e2e/run_e2e.py'
+
+  # A scheduled workflow of a public repository stops after 60 days without
+  # activity.  Switching it on again every night keeps it from silently going
+  # quiet; the traffic light in Home Assistant is the second line of defence.
+  keep-alive:
+    name: Keep the nightly run switched on
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Enable this workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/ha-compat.yaml/enable"

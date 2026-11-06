@@ -1,0 +1,39 @@
+# The set-up of run_e2e.py: the add-on image, a real broker, a real Home Assistant.
+# Only the gateway is simulated, and the Supervisor is left out - the add-on gets the
+# broker from its options instead of asking the Supervisor.
+name: scs-bridge-e2e
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    command: ["mosquitto", "-c", "/mosquitto-no-auth.conf"]
+
+  fake-gateway:
+    image: ${BRIDGE_IMAGE:?}
+    entrypoint: ["python3", "/src/tests/e2e/gateway.py"]
+    init: true
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - ../..:/src:ro
+    ports:
+      - 127.0.0.1:20001:20001
+
+  bridge:
+    image: ${BRIDGE_IMAGE:?}
+    environment:
+      OPTIONS_FILE: /e2e/options.json
+      DATA_DIR: /e2e/data
+    volumes:
+      - ${E2E_DIR:?}:/e2e
+    depends_on: [mosquitto, fake-gateway]
+
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:${HA_TAG:?}
+    environment:
+      TZ: UTC
+    volumes:
+      - ${E2E_DIR:?}/ha:/config
+    ports:
+      - 127.0.0.1:8123:8123
+    depends_on: [mosquitto]

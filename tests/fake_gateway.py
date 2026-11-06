@@ -1,4 +1,4 @@
-"""A minimal OpenWebNet gateway for the tests, listening on 127.0.0.1 only.
+"""A minimal OpenWebNet gateway for the tests, listening on 127.0.0.1 by default.
 
 It speaks all three handshakes a real BTicino gateway can offer, lets a test
 push frames into the event sessions and reproduces the measured quirks from
@@ -63,8 +63,9 @@ class FakeGateway:
         self.idle_timeout: float | None = None
         self._writers: set[asyncio.StreamWriter] = set()
 
-    async def start(self) -> int:
-        self.server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
+    async def start(self, host: str = "127.0.0.1", port: int = 0) -> int:
+        """Listen, by default on a free port of 127.0.0.1; tests/e2e/gateway.py picks both."""
+        self.server = await asyncio.start_server(self._handle, host, port)
         self.port = self.server.sockets[0].getsockname()[1]
         return self.port
 
