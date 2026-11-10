@@ -75,19 +75,64 @@ button.small { padding:4px 9px; font-size:12px; }
 .note ul { margin:6px 0 0; padding-left:18px; }
 .note p { margin:6px 0 0; }
 .note button { margin-top:8px; }
+/* The state of the add-on at a glance: one tile per thing that can be well
+   or not, the colour on the left says which. */
+.top { display:flex; justify-content:space-between; align-items:baseline; gap:12px;
+  flex-wrap:wrap; margin-bottom:12px; }
+.top .sub { margin:0; }
+.tiles { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr));
+  gap:8px; margin-bottom:14px; }
+.tile { background:var(--card); border:1px solid var(--line); border-left:4px solid var(--line);
+  border-radius:10px; padding:9px 12px; min-width:0; }
+.tile.ok { border-left-color:var(--ok); }
+.tile.warn { border-left-color:var(--warn); }
+.tile.bad { border-left-color:var(--danger); }
+.tile .label { font-size:11px; text-transform:uppercase; letter-spacing:.04em;
+  color:var(--muted); font-weight:600; }
+.tile .value { font-size:17px; font-weight:600; line-height:1.3; }
+.tile .value { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+/* Two lines at most: a long list of silenced addresses must not push the
+   other tiles apart - the whole text is in the tooltip. */
+.tile .more { font-size:12px; color:var(--muted); overflow:hidden; display:-webkit-box;
+  -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; }
+.meter { height:4px; border-radius:2px; background:var(--line); margin-top:6px; overflow:hidden; }
+.meter i { display:block; height:100%; background:var(--accent); transition:width .4s; }
+.chip { display:none; padding:4px 10px; border-radius:999px; font-size:12px;
+  border:1px solid var(--warn); color:var(--warn); }
+.chip.show { display:inline-block; }
+.chip.bad { border-color:var(--danger); color:var(--danger); }
+.badge { display:inline-block; margin-left:6px; padding:0 6px; border-radius:999px;
+  font-size:11px; border:1px solid var(--accent); color:var(--accent); white-space:nowrap; }
+td.addr { white-space:nowrap; }
+td.addr input { width:auto; max-width:96px; }
+/* What the check found: the field in red, the reason above the table. */
+input.invalid, select.invalid { border-color:var(--danger); outline:1px solid var(--danger); }
+tr.invalid td { background:rgba(217,48,37,.07); }
+.errors { margin:0 0 8px; padding:8px 10px 8px 28px; border:1px solid var(--danger);
+  border-radius:8px; color:var(--danger); font-size:13px; }
+.tools { display:flex; gap:8px; align-items:center; margin:10px 0 6px; flex-wrap:wrap; }
+.tools input { flex:1; min-width:120px; }
+#frames button { padding:1px 8px; font-size:11px; font-family:inherit; }
+#frames .what { display:flex; gap:8px; align-items:center; white-space:nowrap; }
+#frames .dim { color:var(--muted); }
+.foot { color:var(--muted); font-size:12px; text-align:right; margin-top:4px; }
 </style>
 </head>
 <body>
-<h1>MyHome SCS Bridge</h1>
-<div class="sub" id="status">wird geladen …</div>
+<div class="top">
+  <h1>MyHome SCS Bridge</h1>
+  <div class="sub" id="instance"></div>
+</div>
+
+<div class="tiles" id="tiles"><div class="tile"><div class="label">Add-on</div>
+  <div class="value">wird geladen …</div></div></div>
 
 <div class="bar">
   <button class="primary save" onclick="save()">Speichern &amp; neu starten</button>
   <button class="save" onclick="save(false)">Nur speichern</button>
-  <button onclick="scan(false)">Bus scannen</button>
-  <button onclick="scan(true)">Gründlich scannen</button>
-  <span class="pill"><span class="dot" id="link"></span><span id="linktext">Gateway</span></span>
-  <span class="pill"><span class="dot" id="mqtt"></span><span id="mqtttext">MQTT</span></span>
+  <button class="scan" onclick="scan(false)">Bus scannen</button>
+  <button class="scan" onclick="scan(true)">Gründlich scannen</button>
+  <span class="chip" id="unsaved"></span>
 </div>
 
 <div id="notes"></div>
@@ -97,8 +142,8 @@ button.small { padding:4px 9px; font-size:12px; }
 <div class="card">
   <header onclick="toggle(this)"><h2>Bus-Mitschnitt</h2><span class="count" id="framecount"></span></header>
   <div class="body">
-    <p class="hint">Taster drücken oder Licht schalten – die Adresse erscheint hier und
-      lässt sich direkt übernehmen.</p>
+    <p class="hint">Taster drücken oder Licht schalten – die Adresse erscheint hier. Steht
+      sie noch nicht in der Geräteliste, holt „+ übernehmen“ sie dorthin.</p>
     <div class="sendrow">
       <input id="frame" type="text" class="mono" placeholder="*1*1*29##" spellcheck="false"
              autocomplete="off" onkeydown="if (event.key === 'Enter') sendFrame()">
@@ -106,9 +151,17 @@ button.small { padding:4px 9px; font-size:12px; }
     </div>
     <p class="hint">Was hier eingetippt wird, geht unverändert auf den Bus. Die Antwort
       erscheint im Mitschnitt darunter.</p>
+    <div class="tools">
+      <input id="framefilter" type="text" placeholder="Filtern: Adresse, Frame oder Geräteart"
+             spellcheck="false" autocomplete="off" oninput="showFrames(true)">
+      <button class="small" id="pause" onclick="togglePause()">Anhalten</button>
+      <button class="small" onclick="clearFrames()">Leeren</button>
+    </div>
     <div id="frames" class="mono"></div>
   </div>
 </div>
+
+<div class="foot" id="foot"></div>
 
 <div id="toast"></div>
 
@@ -124,6 +177,15 @@ let REVISION;
 const ORIGIN = new WeakMap();
 const REMOVED = new Set();
 let notesShown = '';
+// Devices the add-on found on the bus that nobody has saved yet ("section|address").
+let NEW = new Set();
+// What the add-on's check found in this list: [{section, index, field, text}].
+let PROBLEMS = [];
+let checkTimer, checkRun = 0;
+// The bus monitor: what the add-on last sent, whether the view stands still,
+// and the number of the last frame that was cleared away.
+let FRAMES = [], paused = false, clearedUpTo = 0, framesShown = '';
+let tilesShown = '', wasScanning = false;
 
 const api = (p, o) => fetch(p, o).then(r => r.json());
 // POST with a JSON body; the answer carries the HTTP status as well.
@@ -142,12 +204,30 @@ function toggle(h) {
   b.style.display = b.style.display === 'none' ? '' : 'none';
 }
 
+// Every change of the list goes through here: the page asks before it leaves,
+// says that something is unsaved, and has the add-on look at the list again.
+function touched() {
+  dirty = true;
+  changed();
+  checkSoon();
+}
+
+function changed() {
+  const chip = document.getElementById('unsaved');
+  chip.textContent = PROBLEMS.length ?
+    (PROBLEMS.length === 1 ? 'Ein Fehler in der Liste' : PROBLEMS.length + ' Fehler in der Liste') :
+    'Ungespeicherte Änderungen';
+  chip.className = 'chip' + (PROBLEMS.length ? ' bad show' : dirty ? ' show' : '');
+}
+
 async function load() {
   SCHEMA = await api('api/schema');
-  // The revision first: a device found between the two requests is then in
-  // the list already, and the next look at the status merely loads it again.
-  REVISION = (await api('api/status')).revision;
-  adopt(await api('api/devices'));
+  // List, revision and what is new in it come in one answer - asked for one
+  // after the other, a device found in between would be in one and not the other.
+  const inventory = await api('api/inventory');
+  REVISION = inventory.revision;
+  NEW = new Set(inventory.new);
+  adopt(inventory.devices);
   render();
   refresh();
   setInterval(refresh, 3000);
@@ -160,6 +240,7 @@ const found = (n) => n === 1 ? 'Ein neu erkanntes Gerät steht jetzt in der List
 function adopt(data) {
   DATA = data;
   REMOVED.clear();
+  PROBLEMS = [];            // the add-on's own list has nothing wrong with it
   for (const items of Object.values(DATA))
     for (const item of items) ORIGIN.set(item, String(item.where || ''));
 }
@@ -184,13 +265,65 @@ function merge(fresh) {
 
 // The add-on's list has moved on.  Without changes of our own we simply show
 // the new one; with changes the newly found devices join them.
-async function syncDevices(revision) {
-  const fresh = await api('api/devices');
+async function syncDevices() {
+  const inventory = await api('api/inventory');
   let added = 0;
-  if (dirty) added = merge(fresh); else adopt(fresh);
-  REVISION = revision;
+  if (dirty) added = merge(inventory.devices); else adopt(inventory.devices);
+  REVISION = inventory.revision;
+  NEW = new Set(inventory.new);
+  // Not while somebody types and nothing was added: building the tables anew
+  // takes the cursor out of the field.
   if (!dirty || added) render();
+  if (added) checkSoon();
   return added;
+}
+
+// ---------------------------------------------------------------- the check
+// The add-on looks at the list with the same code that will read the device
+// file at its next start.  What it finds is shown at the row and the field.
+
+function checkSoon() {
+  clearTimeout(checkTimer);
+  checkTimer = setTimeout(check, 400);
+}
+
+async function check() {
+  clearTimeout(checkTimer);
+  const run = ++checkRun;
+  let r;
+  try { r = await post('api/check', {devices: DATA}); } catch (e) { return PROBLEMS; }
+  // An answer to an older state of the list must not overwrite a newer one.
+  if (run !== checkRun || !Array.isArray(r.problems)) return PROBLEMS;
+  PROBLEMS = r.problems;
+  mark();
+  return PROBLEMS;
+}
+
+function mark() {
+  document.querySelectorAll('#sections .invalid').forEach(e => {
+    e.classList.remove('invalid'); e.removeAttribute('title'); });
+  document.querySelectorAll('#sections .errors').forEach(e => e.remove());
+  for (const p of PROBLEMS) {
+    const card = document.querySelector(`#sections .card[data-section="${CSS.escape(p.section)}"]`);
+    if (!card) continue;
+    const tr = card.querySelectorAll('tbody tr')[p.index];
+    if (!tr) continue;
+    const field = p.field && tr.querySelector(`[data-key="${CSS.escape(p.field)}"]`);
+    const target = field || tr;
+    target.classList.add('invalid');
+    target.title = p.text;
+    let list = card.querySelector('.errors');
+    if (!list) {
+      list = document.createElement('ul');
+      list.className = 'errors';
+      card.querySelector('.body').insertBefore(list, card.querySelector('.scroll'));
+      card.querySelector('.body').style.display = '';   // a folded card hides nothing wrong
+    }
+    const li = document.createElement('li');
+    li.textContent = `Zeile ${p.index + 1}: ${p.text}`;
+    list.appendChild(li);
+  }
+  changed();
 }
 
 function render() {
@@ -198,10 +331,13 @@ function render() {
   root.innerHTML = '';
   for (const [section, spec] of Object.entries(SCHEMA)) {
     const items = DATA[section] || [];
+    const fresh = items.filter(item => isNew(section, item)).length;
     const card = document.createElement('div');
     card.className = 'card';
+    card.dataset.section = section;
     card.innerHTML = `<header onclick="toggle(this)"><h2>${esc(spec.label)}</h2>
-      <span class="count">${items.length}</span></header><div class="body"></div>`;
+      <span class="count">${items.length}${fresh ? ' · ' + fresh + ' neu' : ''}</span></header>
+      <div class="body"></div>`;
     const body = card.querySelector('.body');
     if (spec.note) {
       const note = document.createElement('p');
@@ -225,32 +361,50 @@ function render() {
     add.style.marginTop = '10px';
     add.textContent = '+ Gerät';
     add.onclick = () => { (DATA[section] = DATA[section] || []).push({where: '', name: ''});
-      dirty = true; render(); };
+      touched(); render(); };
     body.appendChild(add);
     if (!items.length) body.querySelector('table').style.display = 'none';
     root.appendChild(card);
   }
+  mark();
+  // Which addresses the monitor may offer depends on what this list holds.
+  showFrames();
 }
+
+// Found on the bus and not saved by anybody yet - and still the row it was.
+const isNew = (section, item) => ORIGIN.get(item) !== undefined &&
+  NEW.has(key(section, ORIGIN.get(item)));
 
 function row(section, spec, item, index) {
   const tr = document.createElement('tr');
-  const set = (key, value) => { dirty = true;
-    if (value === '' || value === null) delete item[key]; else item[key] = value; };
+  const set = (key, value) => {
+    if (value === '' || value === null) delete item[key]; else item[key] = value;
+    touched(); };
 
   const where = document.createElement('input');
   where.type = 'text'; where.className = 'mono'; where.value = item.where || '';
+  where.dataset.key = 'where';
   where.placeholder = '12'; where.oninput = () => set('where', where.value.trim());
   const name = document.createElement('input');
   name.type = 'text'; name.value = item.name || '';
+  name.dataset.key = 'name';
   name.placeholder = 'Name'; name.oninput = () => set('name', name.value);
-  tr.appendChild(cell(where)); tr.appendChild(cell(name));
+  const address = cell(where);
+  address.className = 'addr';
+  if (isNew(section, item)) {
+    const badge = document.createElement('span');
+    badge.className = 'badge'; badge.textContent = 'neu';
+    badge.title = 'Am Bus gefunden, noch nicht in der Gerätedatei gespeichert';
+    address.appendChild(badge);
+  }
+  tr.appendChild(address); tr.appendChild(cell(name));
 
   for (const f of spec.fields) {
     let el;
     if (f.type === 'bool') {
       el = document.createElement('input'); el.type = 'checkbox';
       el.checked = !!item[f.key];
-      el.onchange = () => { dirty = true; item[f.key] = el.checked; };
+      el.onchange = () => { item[f.key] = el.checked; touched(); };
     } else if (f.type === 'select') {
       el = document.createElement('select');
       if (f.wide) el.style.minWidth = '230px';
@@ -267,10 +421,11 @@ function row(section, spec, item, index) {
       el = document.createElement('input'); el.type = 'text';
       el.placeholder = f.placeholder || '';
       el.value = Array.isArray(item[f.key]) ? item[f.key].join(', ') : (item[f.key] || '');
-      el.oninput = () => { dirty = true;
+      el.oninput = () => {
         const v = el.value.split(',').map(s => s.trim()).filter(Boolean)
           .map(s => isNaN(s) ? s : Number(s));
-        if (v.length) item[f.key] = v; else delete item[f.key]; };
+        if (v.length) item[f.key] = v; else delete item[f.key];
+        touched(); };
     } else {
       el = document.createElement('input');
       el.type = f.type === 'number' ? 'number' : 'text';
@@ -279,21 +434,35 @@ function row(section, spec, item, index) {
       el.oninput = () => set(f.key, el.value === '' ? '' :
         (f.type === 'number' ? Number(el.value) : el.value));
     }
+    el.dataset.key = f.key;
     tr.appendChild(cell(el));
   }
 
   const del = document.createElement('button');
   del.className = 'link'; del.title = 'Entfernen'; del.textContent = '✕';
-  del.onclick = () => { DATA[section].splice(index, 1); dirty = true;
+  del.onclick = () => { DATA[section].splice(index, 1);
     if (ORIGIN.get(item)) REMOVED.add(key(section, ORIGIN.get(item)));
-    render(); };
+    // The rows below move up by one - what was found has to move with them.
+    PROBLEMS = PROBLEMS.filter(p => !(p.section === section && p.index === index))
+      .map(p => p.section === section && p.index > index ? {...p, index: p.index - 1} : p);
+    touched(); render(); };
   tr.appendChild(cell(del));
   return tr;
 }
 
 function cell(el) { const td = document.createElement('td'); td.appendChild(el); return td; }
 
+function refuseWithProblems() {
+  toast((PROBLEMS.length === 1 ? 'Ein Fehler' : PROBLEMS.length + ' Fehler') +
+    ' in der Geräteliste – nichts gespeichert. Die Stellen sind rot markiert.', 7000);
+  const first = document.querySelector('#sections .invalid');
+  if (first) first.scrollIntoView({block: 'center', behavior: 'smooth'});
+}
+
 async function save(restart = true) {
+  // Look first, with the list exactly as it stands - not with what the last
+  // look half a second ago saw.
+  if ((await check()).length) { refuseWithProblems(); return; }
   const clean = {};
   for (const [section, items] of Object.entries(DATA)) {
     const kept = (items || []).filter(i => String(i.where || '').trim() !== '');
@@ -307,16 +476,23 @@ async function save(restart = true) {
     // The add-on found devices this page did not show yet.  Saved as it is,
     // the list would have dropped them - so they join it first.
     let added = 0;
-    try { added = await syncDevices((await api('api/status')).revision); }
+    try { added = await syncDevices(); }
     catch (e) { toast('Keine Verbindung zum Add-on – nichts gespeichert.'); return; }
     toast((added ? found(added) : 'Die Geräteliste hat sich inzwischen geändert.') +
       ' Nichts gespeichert – bitte prüfen und noch einmal speichern.', 9000);
+    return;
+  }
+  if (r.status === 422) {
+    // The add-on itself refused the list - show where, row by row.
+    await check();
+    refuseWithProblems();
     return;
   }
   // Only a confirmed save may restart the add-on.
   if (!r.ok) { toast(r.error || 'Speichern fehlgeschlagen.'); return; }
   dirty = false;
   REMOVED.clear();
+  changed();
   if (restart) { toast('Gespeichert – Add-on startet neu …'); await restartAddon(); }
   else toast('Gespeichert. Wirksam nach einem Neustart.');
 }
@@ -331,44 +507,169 @@ async function scan(deep) {
       body: JSON.stringify({deep: deep})});
   } catch (e) { toast('Keine Verbindung zum Add-on.'); return; }
   toast(deep ? 'Gründlicher Scan gestartet …' : 'Scan gestartet …');
+  setTimeout(refresh, 300);
+}
+
+// ---------------------------------------------------------------- the tiles
+// One tile per thing that can be well or not.  Built anew only when a value
+// changed, so a tooltip that is open does not flicker away every three seconds.
+
+function tiles(s) {
+  const silenced = s.silenced || [];
+  const scan = String(s.scan || '');
+  const cut = scan.indexOf(':');
+  const progress = s.scan_progress && s.scan_progress.total ?
+    Math.min(100, Math.round(100 * s.scan_progress.done / s.scan_progress.total)) : null;
+  const list = [
+    {label: 'Gateway', value: s.connected ? 'verbunden' : 'getrennt', more: s.host,
+     kind: s.connected ? 'ok' : 'bad'},
+    {label: 'MQTT', value: s.mqtt_connected ? 'verbunden' : 'getrennt',
+     more: `${s.mqtt_broker} · ${s.subscriptions} Abos`, kind: s.mqtt_connected ? 'ok' : 'bad'},
+    {label: 'Geräte', value: s.devices,
+     more: silenced.length ? silenced.length + ' stillgelegt: ' + silenced.join(', ') :
+       'alle werden abgefragt', kind: silenced.length ? 'warn' : ''},
+    {label: 'Bus', value: s.sent_per_minute + '/min',
+     more: 'gesendet · ' + s.received_per_minute + '/min empfangen', kind: ''},
+    {label: 'Warteschlange', value: s.queue,
+     more: s.dropped ? s.dropped + ' Abfragen verworfen' : 'wartende Frames',
+     kind: s.dropped || s.queue > 50 ? 'warn' : ''},
+    {label: 'Bremse', value: s.brake_gap > 0 ? s.brake_gap + ' s Abstand' : 'aus',
+     more: `${s.refused} abgelehnt · ${s.unanswered} ohne Antwort`,
+     kind: s.brake_gap > 0 ? 'warn' : ''},
+    {label: 'Bus-Scan', value: progress !== null ? progress + ' %' :
+       (cut > 0 ? scan.slice(0, cut) : scan),
+     more: s.scanning ? scan + ' – Schalten kann dauern' :
+       (cut > 0 ? scan.slice(cut + 1).trim() : 'auf Knopfdruck'),
+     kind: scan.startsWith('abgebrochen') || scan.startsWith('kein') ? 'warn' : '', progress},
+  ];
+  const shown = JSON.stringify(list);
+  if (shown === tilesShown) return;
+  tilesShown = shown;
+  const root = document.getElementById('tiles');
+  root.innerHTML = '';
+  for (const t of list) {
+    const tile = document.createElement('div');
+    tile.className = 'tile ' + t.kind;
+    for (const [cls, text] of [['label', t.label], ['value', t.value], ['more', t.more]]) {
+      const e = document.createElement('div');
+      e.className = cls; e.textContent = text == null ? '' : text;
+      if (cls === 'more') e.title = e.textContent;
+      tile.appendChild(e);
+    }
+    if (t.progress !== null && t.progress !== undefined) {
+      const meter = document.createElement('div');
+      meter.className = 'meter';
+      const bar = document.createElement('i');
+      bar.style.width = t.progress + '%';
+      meter.appendChild(bar);
+      tile.appendChild(meter);
+    }
+    root.appendChild(tile);
+  }
 }
 
 async function refresh() {
   try {
     const s = await api('api/status');
-    document.getElementById('status').textContent =
-      `${s.instance ? 'Instanz ' + s.instance + ' · ' : ''}` +
-      `${s.scanning ? 'Bus-Scan läuft – Schalten kann einige Sekunden dauern · ' : ''}` +
-      `${s.devices} Geräte · Gateway ${s.host} · ${s.scan} · ` +
-      `MQTT ${s.mqtt_broker} (${s.subscriptions} Abos) · ` +
-      `Bus: ${s.sent_per_minute}/min gesendet, ${s.received_per_minute}/min empfangen` +
-      ` · ${s.refused} abgelehnt, ${s.unanswered} unbeantwortet` +
-      `${s.brake_gap > 0 ? ' · gebremst auf ' + s.brake_gap + ' s' : ''}` +
-      `${s.queue ? ' · ' + s.queue + ' in der Warteschlange' : ''}` +
-      `${s.silenced && s.silenced.length ? ' · ' + s.silenced.length +
-        ' stillgelegt (' + s.silenced.join(', ') + ')' : ''}`;
-    document.getElementById('link').className = 'dot' + (s.connected ? ' on' : '');
-    document.getElementById('linktext').textContent =
-      s.connected ? 'Gateway verbunden' : 'Gateway getrennt';
-    document.getElementById('mqtt').className = 'dot' + (s.mqtt_connected ? ' on' : '');
-    document.getElementById('mqtttext').textContent =
-      s.mqtt_connected ? 'MQTT verbunden' : 'MQTT getrennt';
+    tiles(s);
+    document.getElementById('instance').textContent = s.instance ? 'Instanz ' + s.instance : '';
+    document.getElementById('foot').textContent = s.version ? 'Version ' + s.version : '';
     notes(s);
     // Entries the add-on could not read are not in this list - saving it
     // would write the device file without them.
     document.querySelectorAll('button.save').forEach(b => { b.disabled = !!s.saving_blocked; });
+    // One scan at a time; the add-on would only say "already running".
+    document.querySelectorAll('button.scan').forEach(b => { b.disabled = !!s.scanning; });
+    if (wasScanning && !s.scanning) toast('Bus-Scan ' + s.scan, 6000);
+    wasScanning = !!s.scanning;
     if (s.revision !== REVISION) {
-      const added = await syncDevices(s.revision);
+      const added = await syncDevices();
       if (added) toast(found(added), 6000);
     }
-    const f = await api('api/frames');
-    const box = document.getElementById('frames');
-    document.getElementById('framecount').textContent = f.frames.length;
-    box.innerHTML = f.frames.slice().reverse().map(x =>
-      `<div><span>${esc(x.time || '')} ${esc(x.frame)}` +
-      `${x.count > 1 ? ' <span style="color:var(--muted)">×' + esc(x.count) + '</span>' : ''}</span>` +
-      `<span>${esc(x.hint || '')}</span></div>`).join('');
+    FRAMES = (await api('api/frames')).frames;
+    showFrames();
   } catch (e) { /* Ingress blinzelt beim Neustart */ }
+}
+
+// ---------------------------------------------------------- the bus monitor
+// Newest on top.  The list stands still while it is paused, scrolled down or
+// has text selected in it - otherwise the line somebody is reading or copying
+// would jump away every three seconds.
+
+function showFrames(force = false) {
+  const box = document.getElementById('frames');
+  const filter = document.getElementById('framefilter').value.trim().toLowerCase();
+  const visible = FRAMES.filter(x => (x.id || 0) > clearedUpTo);
+  document.getElementById('framecount').textContent = visible.length;
+  const selection = window.getSelection();
+  const reading = paused || box.scrollTop > 4 ||
+    (selection && !selection.isCollapsed && box.contains(selection.anchorNode));
+  if (reading && !force) return;
+  const lines = visible.filter(x => !filter ||
+    (x.frame + ' ' + frameLabel(x)).toLowerCase().includes(filter)).reverse();
+  const shown = JSON.stringify([lines.map(x => [x.id, x.count]), filter,
+    lines.map(x => canTakeOver(x))]);
+  if (shown === framesShown) return;
+  framesShown = shown;
+  box.innerHTML = '';
+  for (const x of lines) {
+    const line = document.createElement('div');
+    const left = document.createElement('span');
+    left.textContent = `${x.time || ''} ${x.frame}`;
+    if (x.count > 1) {
+      const times = document.createElement('span');
+      times.className = 'dim'; times.textContent = ' ×' + x.count;
+      left.appendChild(times);
+    }
+    const right = document.createElement('span');
+    right.className = 'what';
+    const label = document.createElement('span');
+    label.textContent = frameLabel(x);
+    right.appendChild(label);
+    if (canTakeOver(x)) {
+      const button = document.createElement('button');
+      button.textContent = '+ übernehmen';
+      button.title = 'Diese Adresse in die Geräteliste aufnehmen';
+      button.onclick = () => takeOver(x);
+      right.appendChild(button);
+    }
+    line.appendChild(left); line.appendChild(right);
+    box.appendChild(line);
+  }
+}
+
+// "Licht und Dimmer 33" reads better than "lights 33".
+const frameLabel = (x) => x.section && SCHEMA[x.section] ?
+  SCHEMA[x.section].label + ' ' + x.where : (x.hint || '');
+
+// An address the bus talks about and this list does not know.
+const canTakeOver = (x) => !!(x.section && x.where && SCHEMA[x.section] &&
+  !(DATA[x.section] || []).some(i => String(i.where || '') === x.where));
+
+function takeOver(x) {
+  const items = DATA[x.section] = DATA[x.section] || [];
+  items.push({where: x.where, name: ''});
+  touched();
+  render();
+  showFrames(true);
+  const card = document.querySelector(`#sections .card[data-section="${CSS.escape(x.section)}"]`);
+  card.querySelector('.body').style.display = '';
+  const rows = card.querySelectorAll('tbody tr');
+  const name = rows[rows.length - 1].querySelector('[data-key="name"]');
+  name.scrollIntoView({block: 'center', behavior: 'smooth'});
+  name.focus({preventScroll: true});
+  toast(`${SCHEMA[x.section].label} ${x.where} steht jetzt in der Liste – Namen eintragen und speichern.`, 5000);
+}
+
+function togglePause() {
+  paused = !paused;
+  document.getElementById('pause').textContent = paused ? 'Weiter' : 'Anhalten';
+  if (!paused) showFrames(true);
+}
+
+function clearFrames() {
+  clearedUpTo = FRAMES.reduce((highest, x) => Math.max(highest, x.id || 0), clearedUpTo);
+  showFrames(true);
 }
 
 // The notes above the device list.  Built anew only when something changed -

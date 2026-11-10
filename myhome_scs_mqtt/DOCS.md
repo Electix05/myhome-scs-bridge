@@ -145,7 +145,7 @@ Deinstallieren** `/addon_configs/local_myhome_scs_bridge/devices.yaml` sichern
 4. Tab **Konfiguration**: mindestens `gateway_host` (IP des Gateways, z. B.
    `192.0.2.10`) und `gateway_password` eintragen, speichern.
 5. **Starten** und den Tab **Protokoll** öffnen. Erwartet werden u. a.
-   `MyHome SCS Bridge 1.24.0 starting`, `MQTT connected` und
+   `MyHome SCS Bridge 1.25.0 starting`, `MQTT connected` und
    `gateway link is up`.
 
 Bleibt `gateway_host` leer, beendet sich das Add-on sofort mit
@@ -194,10 +194,11 @@ mit `ha apps logs local_myhome_scs_bridge`, aus dem Repository
 
 ### 2.2 Wo die Zahlen stehen
 
-- **Weboberfläche** (Seitenleiste *MyHome SCS Bridge*), Statuszeile oben:
-  `…/min gesendet, …/min empfangen · N abgelehnt, M unbeantwortet ·
-  gebremst auf X s · … in der Warteschlange`. Sie aktualisiert sich alle drei
-  Sekunden.
+- **Weboberfläche** (Seitenleiste *MyHome SCS Bridge*), Kacheln oben: **Bus**
+  (`…/min` gesendet und empfangen), **Warteschlange**, **Bremse** (`aus` oder der
+  Abstand in Sekunden, darunter abgelehnte Frames und Frames ohne Antwort) und
+  **Geräte** (darunter die stillgelegten Adressen). Sie aktualisieren sich alle
+  drei Sekunden.
 - **`/api/status`** liefert dieselben Werte als JSON: `sent`, `received`,
   `sent_per_minute`, `received_per_minute`, `queue`, `throttled` (wie oft die
   harte Grenze von 5 Frames/s gebremst hat), `refused`, `unanswered`,
@@ -238,12 +239,12 @@ mit `ha apps logs local_myhome_scs_bridge`, aus dem Repository
    starten, drei Abfragerunden abwarten (`poll_interval: 60`). Dabei einen
    echten Schalter betätigen. Erwartet: `refused` zählt hoch, nach drei Runden
    steht `Adresse … wurde 3-mal abgelehnt` im Protokoll, das Gerät ist in Home
-   Assistant **nicht verfügbar** und steht in der Statuszeile unter
+   Assistant **nicht verfügbar** und steht in der Kachel **Geräte** unter
    „stillgelegt“. Danach zählt `refused` nicht weiter (nur alle 10 Minuten ein
    Versuch). `brake_gap` bleibt 0, Schalten bleibt unter einer Sekunde.
 4. **Scan-Schwall:** in Home Assistant **Bus gründlich scannen** drücken
-   (rund 400 Abfragen, gut zwei Minuten). Erwartet: In der Statuszeile steht
-   „Bus-Scan läuft …“, Schalten ist träge, **funktioniert aber** – nicht mehr
+   (rund 400 Abfragen, gut zwei Minuten). Erwartet: Die Kachel **Bus-Scan**
+   zeigt den Fortschritt, Schalten ist träge, **funktioniert aber** – nicht mehr
    abgelehnt. Direkt nach dem Scan: `queue` fällt auf 0 (Protokoll: `N queued
    requests dropped`), `brake_gap` ist spätestens nach ein paar Sekunden 0 und
    alles ist wieder normal. **Kein Nachlauf von Minuten.**
@@ -254,7 +255,7 @@ mit `ha apps logs local_myhome_scs_bridge`, aus dem Repository
    Erwartet: `gateway link is down`, nach dem Wiederkommen `gateway link is
    up`, `brake_gap` wieder 0.
 
-Notieren: Uhrzeit, Ablauf, die Werte aus der Statuszeile vorher/nachher und
+Notieren: Uhrzeit, Ablauf, die Werte aus den Kacheln vorher/nachher und
 auffällige Protokollzeilen. Daraus wird der endgültige Schwellenwert.
 
 ## 3. Zurück zur alten Bridge / aufräumen
@@ -442,7 +443,7 @@ sie nicht mehr ab:
   vorerst nicht mehr abgefragt` (Stufe warning).
 - In Home Assistant wird das Gerät **nicht verfügbar** (eigenes Topic
   `<basis>/<typ>/<adresse>/reachable`, retained).
-- In der Statuszeile der Weboberfläche steht `… stillgelegt (lights 12342)`.
+- In der Weboberfläche steht in der Kachel **Geräte** `1 stillgelegt: lights 12342`.
 - Alle zehn Minuten geht **eine** Abfrage raus. Antwortet die Adresse – oder
   meldet sie sich von selbst über den Bus –, ist sie sofort wieder normal
   (`… antwortet wieder`, Stufe info).
@@ -450,7 +451,7 @@ sie nicht mehr ab:
   ruht; so lässt sich ein korrigierter Eintrag sofort ausprobieren.
 
 Das ist der Normalfall für einen Tippfehler in der Gerätedatei oder ein
-ausgebautes Gerät. Zeigt die Statuszeile ein Gerät, das es wirklich gibt, dann
+ausgebautes Gerät. Zeigt die Kachel ein Gerät, das es wirklich gibt, dann
 stimmt die Adresse nicht – oder das Gateway erreicht es nicht.
 
 Zwei Adressen werden **nie** stillgelegt: eine, die sich zwei Geräte absichtlich
@@ -464,8 +465,8 @@ ein kurzer Lastschwall ist kein Beweis, dass sie fehlt).
 Der Scan bleibt absichtlich schnell. Seine Abfragen gelten als
 Hintergrundverkehr: Sie lassen die Reserve für Befehle frei, und ihre Ablehnung
 (die meisten gescannten Adressen gibt es nicht) kann die Bremse nie auslösen.
-**Schalten ist währenddessen träge, funktioniert aber.** In der Statuszeile
-steht „Bus-Scan läuft – Schalten kann einige Sekunden dauern“.
+**Schalten ist währenddessen träge, funktioniert aber.** Die Kachel **Bus-Scan**
+zeigt den Fortschritt und den Hinweis „Schalten kann dauern“.
 
 Nach dem Scan wird die Hintergrund-Warteschlange geleert – was dort steht, ist
 Minuten alt, und der Scan hat gerade alles abgefragt. Die Abfragerunde startet
@@ -478,20 +479,41 @@ In der Seitenleiste unter **MyHome SCS Bridge**, über Ingress – kein
 zusätzlicher Port, keine zweite Anmeldung. Die Oberfläche nimmt nur
 Verbindungen über Home Assistants Ingress an.
 
+- **Kacheln oben** zeigen den Zustand auf einen Blick: Gateway, MQTT, Geräte
+  (mit den stillgelegten Adressen), Bus, Warteschlange, Bremse und Bus-Scan. Der
+  Rand links ist grün, wenn etwas in Ordnung ist, gelb bei einer Auffälligkeit
+  und rot bei einer getrennten Verbindung. Unten rechts steht die Version.
 - **Geräte bearbeiten, anlegen und löschen** – beim Speichern landen
-  eingetragene und automatisch erkannte Geräte gemeinsam in der Gerätedatei.
+  eingetragene und automatisch erkannte Geräte gemeinsam in der Gerätedatei. Ein
+  Gerät mit dem Kennzeichen **neu** wurde am Bus gefunden und steht noch nicht in
+  der Gerätedatei.
+- **Die Liste wird geprüft, während sie bearbeitet wird** – mit denselben
+  Geräteklassen, die die Gerätedatei beim nächsten Start lesen. Fehler stehen rot
+  am Feld und über der Tabelle: eine Adresse doppelt (auch als Licht und als
+  Schaltaktor), eine Zeile mit Namen ohne Adresse, Zeichen, die in keiner Adresse
+  vorkommen, Schließer und Öffner zugleich, Warm über Kalt, negative Zeiten.
+  Solange ein Fehler in der Liste steht, wird nicht gespeichert. Leere Zeilen
+  werden wie bisher nicht mitgespeichert.
 - **Speichern & neu starten** übernimmt Änderungen sofort, **Nur speichern**
   beim nächsten Start. Bis dahin steht über der Liste ein Hinweis mit dem Knopf
   **Jetzt neu starten**, und die Seite zeigt weiter den gespeicherten Stand.
-- **Gateway und MQTT** – je ein Punkt: grün verbunden, rot getrennt.
+  „Ungespeicherte Änderungen“ neben den Knöpfen erinnert daran, dass noch nichts
+  geschrieben ist.
 - **Hinweise über der Geräteliste**, wenn etwas eine Entscheidung braucht
   (Kapitel 7.2).
-- **Bus scannen / Gründlich scannen**.
-- **Bus-Mitschnitt** mit Uhrzeit, Wiederholungen und dem Hinweis `(neu)` bei
-  unbekannten Adressen; darüber ein Feld, um einen Frame von Hand zu senden.
-  Angenommen wird genau ein Frame aus Ziffern, `*` und `#`; die Antwort des
-  Gateways (angenommen, abgelehnt, keine Antwort) erscheint als Meldung. Eine
-  Ablehnung von Hand zählt nicht für die Bremse.
+- **Bus scannen / Gründlich scannen** – die Kachel **Bus-Scan** zeigt den
+  Fortschritt, die Knöpfe sind solange gesperrt, und neu gefundene Geräte
+  erscheinen von selbst in der Liste.
+- **Bus-Mitschnitt** mit Uhrzeit, Wiederholungen und der Geräteart samt Adresse;
+  darüber ein Feld, um einen Frame von Hand zu senden. Angenommen wird genau ein
+  Frame aus Ziffern, `*` und `#`; die Antwort des Gateways (angenommen,
+  abgelehnt, keine Antwort) erscheint als Meldung. Eine Ablehnung von Hand zählt
+  nicht für die Bremse. **Filtern** zeigt nur Zeilen mit einer Adresse, einem
+  Frame oder einer Geräteart, **Anhalten** lässt die Liste stehen, **Leeren**
+  räumt sie ab. Die Liste steht auch still, solange darin gescrollt oder Text
+  markiert ist. Steht eine Adresse noch nicht in der Geräteliste (bei
+  abgeschalteter Geräteerkennung oder nach dem Löschen einer Zeile), holt
+  **+ übernehmen** sie dorthin.
 
 ### 7.1 Farbige Leuchten (RGBW) und Tunable White
 

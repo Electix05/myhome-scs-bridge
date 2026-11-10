@@ -616,6 +616,21 @@ class TestScan(BridgeTestCase):
                                  ("climate", "2"), ("energy", "51"), ("binary_sensors", "3")})
         self.assertIn("fertig: 6 neu", self.bridge.status.scan_state)
 
+    async def test_the_scan_says_how_far_it_has_come(self):
+        seen: list[tuple[int, int]] = []
+        while not self.bridge.status.scan_state.startswith("fertig"):
+            progress = self.bridge.web_status()["scan_progress"]
+            if progress is not None:
+                seen.append((progress["done"], progress["total"]))
+            await asyncio.sleep(0.01)
+        self.assertTrue(seen, "no progress was reported while the scan ran")
+        # It only ever moves forward and never claims more than there is.
+        self.assertEqual([done for done, _total in seen], sorted(done for done, _total in seen))
+        self.assertTrue(all(0 <= done <= total for done, total in seen))
+        self.assertGreater(seen[-1][0], 0)
+        # Nothing to show once it is over.
+        self.assertIsNone(self.bridge.web_status()["scan_progress"])
+
     async def test_the_scan_never_switches_anything(self):
         self.assertTrue(await self.wait_for_scan())
         self.assertEqual([f for f in self.fake.received if not f.startswith("*#")], [])

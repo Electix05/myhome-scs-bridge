@@ -28,6 +28,7 @@ from ..settings import (
 from ..web.monitor import BusMonitor
 from ..web.server import WebError, WebHandlers, WebServer, frame_problem, request_restart
 from .background import BackgroundTasks
+from .check import check_devices
 from .discovery import Collector, Discovery
 from .registry import FACTORIES, Registry, load_discovered, save_discovered
 
@@ -152,6 +153,8 @@ class Bridge:
                 scan=self.trigger_scan,
                 restart=self.schedule_restart,
                 purge=self.web_confirm_purge,
+                check=check_devices,
+                inventory=self.web_inventory,
             ),
             **(web_options or {}),
         )
@@ -179,6 +182,9 @@ class Bridge:
         self._post_scan_task: asyncio.Task[None] | None = None
         self._scanning = False
         self._scanned = False
+        # How far a running scan has come, for the bar in the web interface.
+        self._scan_done = 0
+        self._scan_total = 0
         self._save_task: asyncio.Task[None] | None = None
         self._save_pending = False
         self._started = False
@@ -437,6 +443,9 @@ class Bridge:
             "silenced": self.silenced_devices(),
             "scanning": self.scanning,
             "scan": self.status.scan_state,
+            # Probes sent and probes planned while a scan runs, else None.
+            "scan_progress": ({"done": self._scan_done, "total": self._scan_total}
+                              if self.scanning else None),
             "version": __version__,
             "mqtt_broker": f"{self.settings.mqtt.host}:{self.settings.mqtt.port}",
             "mqtt_connected": self.mqtt.connected,
@@ -484,6 +493,20 @@ class Bridge:
         for items in sections.values():
             items.sort(key=lambda item: str(item.get("where", "")))
         return sections
+
+    def web_inventory(self) -> dict[str, Any]:
+        """The device list, the revision it belongs to and what is new in it.
+
+        All three in one answer: asked for one after the other, a device found
+        in between would be in the list but not in the revision, or the other
+        way round.  ``new`` names the devices that so far only live in the
+        discovery memory ("section|address") - found on the bus, not yet
+        written to the device file by anybody.
+        """
+        new = sorted(f"{entity.section}|{entity.to_config().get('where', entity.where)}"
+                     for entity in self.registry.device_entities()
+                     if self.registry.is_remembered(entity))
+        return {"revision": self.revision, "devices": self.web_devices(), "new": new}
 
     async def web_save_devices(self, sections: dict[str, list[dict[str, Any]]],
                                revision: int | None = None) -> None:
@@ -629,12 +652,14 @@ class Bridge:
         _LOGGER.info("Bus scan started (%d probes%s)", total, ", deep" if deep else "")
         self._scanning = True
         sent = 0
+        self._scan_done, self._scan_total = 0, total
         try:
             for phase in phases:
                 for frame in phase.frames:
                     if not await self._probe(frame):
                         return
                     sent += 1
+                    self._scan_done = sent
                     if sent % 5 == 0 or frame is phase.frames[-1]:
                         self.status.set_scan_state(f"läuft: {phase.label} ({sent}/{total})")
                     await asyncio.sleep(timing.probe_pace)
@@ -645,9 +670,12 @@ class Bridge:
             followup = list(dict.fromkeys(
                 frame for entity in self.registry.device_entities()
                 for frame in entity.followup_frames()))
+            # The questions of the second pass only show up now.
+            self._scan_total = total + len(followup)
             for index, frame in enumerate(followup, 1):
                 if not await self._probe(frame):
                     return
+                self._scan_done = total + index
                 if index % 5 == 0 or index == len(followup):
                     self.status.set_scan_state(f"läuft: Nachprüfung ({index}/{len(followup)})")
                 await asyncio.sleep(timing.probe_pace)

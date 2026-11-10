@@ -51,7 +51,7 @@ SUPERVISOR_API = "http://supervisor"
 SUPERVISOR_TIMEOUT = 10.0
 
 ROUTES = ("/api/devices", "/api/status", "/api/frames", "/api/send", "/api/scan",
-          "/api/restart", "/api/schema", "/api/purge")
+          "/api/restart", "/api/schema", "/api/purge", "/api/check", "/api/inventory")
 
 JSON_TYPE = "application/json; charset=utf-8"
 HTML_TYPE = "text/html; charset=utf-8"
@@ -86,6 +86,13 @@ class WebHandlers:
     # Run the clean-up that waits for a confirmation; the number of removed
     # topics, or None when nothing could be removed.
     purge: Callable[[], Awaitable[int | None]] | None = None
+    # What is wrong with a device list, row by row (bridge/check.py); raises
+    # ValueError when it is no device list at all.  Asked while somebody types
+    # and once more before anything is written.
+    check: Callable[[object], list[dict[str, Any]]] | None = None
+    # The device list together with the revision it belongs to and the
+    # devices that are not in the device file yet: {revision, devices, new}.
+    inventory: Callable[[], dict[str, Any]] | None = None
 
 
 # --------------------------------------------------------------------------
@@ -352,6 +359,14 @@ class WebServer:
                 sections = clean_devices(data)
             except ValueError as err:
                 raise WebError("400 Bad Request", str(err)) from err
+            # Checked once more right here, whatever the page did before: an
+            # entry the add-on cannot read at its next start must not get
+            # into the device file in the first place.
+            problems = handlers.check(sections) if handlers.check is not None else []
+            if problems:
+                return ("422 Unprocessable Content", JSON_TYPE, self._json_bytes({
+                    "ok": False, "problems": problems,
+                    "error": "Die Geräteliste hat Fehler - nichts gespeichert."}))
             try:
                 if revision is None:
                     await handlers.save_devices(sections)
@@ -377,6 +392,17 @@ class WebServer:
             self._expect(method, "POST")
             handlers.restart()
             return self._json({"ok": True})
+        if path == "/api/inventory" and handlers.inventory is not None:
+            self._expect(method, "GET")
+            return self._json(handlers.inventory())
+        if path == "/api/check" and handlers.check is not None:
+            self._expect(method, "POST")
+            data = self._body(body, required=True)
+            devices = data["devices"] if isinstance(data.get("devices"), dict) else data
+            try:
+                return self._json({"problems": handlers.check(devices)})
+            except ValueError as err:
+                raise WebError("400 Bad Request", str(err)) from err
         if path == "/api/purge" and handlers.purge is not None:
             self._expect(method, "POST")
             removed = await handlers.purge()

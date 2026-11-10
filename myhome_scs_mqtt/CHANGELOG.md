@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.25.0
+
+Die Weboberfläche sagt mehr und lässt weniger durch. Am Bus und an den
+MQTT-Topics ändert sich nichts.
+
+- **Kacheln statt Statuszeile.** Gateway, MQTT, Geräte, Bus, Warteschlange,
+  Bremse und Bus-Scan stehen je in einer Kachel, der Rand zeigt grün, gelb oder
+  rot. Stillgelegte Adressen stehen bei den Geräten, die Version unten rechts.
+- **Die Geräteliste wird geprüft, bevor sie geschrieben wird** – mit denselben
+  Geräteklassen, die die Gerätedatei beim nächsten Start lesen. Was die Prüfung
+  besteht, kann beim Start nicht mehr als „nicht lesbar“ auffallen. Gefunden
+  werden: eine Adresse doppelt (auch als Licht und als Schaltaktor – auf dem Bus
+  dasselbe Gerät), eine Zeile mit Namen ohne Adresse (wurde bisher wortlos
+  verworfen), Zeichen, die in keiner Adresse vorkommen, Schließer und Öffner
+  zugleich, eine Weißtemperatur außerhalb 1000–20000 K oder Warm über Kalt, min
+  über max bei Heizzonen, negative Zeiten. Die Seite zeigt Zeile und Feld rot und
+  fragt bei jeder Änderung neu; gespeichert wird erst ohne Fehler. Das Add-on
+  prüft beim Speichern selbst noch einmal (`422` mit der Fehlerliste).
+- **Bus-Scan mit Fortschritt:** Balken in der Kachel, Scan-Knöpfe solange
+  gesperrt, Meldung am Ende. Am Bus gefundene, noch nicht gespeicherte Geräte
+  tragen das Kennzeichen „neu“.
+- **Bus-Mitschnitt:** Die Liste springt nicht mehr alle drei Sekunden weg – sie
+  steht, solange darin gescrollt oder markiert wird oder „Anhalten“ gedrückt ist.
+  Dazu Filter und „Leeren“. Der Hinweistext versprach, eine Adresse lasse sich
+  „direkt übernehmen“; den Knopf dafür gibt es jetzt („+ übernehmen“).
+- **Ungespeicherte Änderungen** werden neben den Knöpfen angezeigt.
+- Neue Routen: `GET /api/inventory` (Liste, Revision und neue Geräte in einer
+  Antwort), `POST /api/check`. `/api/status` liefert `scan_progress`,
+  `/api/frames` je Frame `id`, `section` und `where`.
+
 ## 1.24.0
 
 Schutz vor verlorenen Geräten. Home Assistant vergisst eine Entity samt Namen,

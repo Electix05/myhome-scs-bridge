@@ -31,6 +31,7 @@ class BusMonitor:
         self._known = known
         self._now = now
         self._frames: deque[dict[str, Any]] = deque(maxlen=size)
+        self._serial = 0
 
     def record(self, message: msg.OwnMessage) -> None:
         """Keep a frame that came from the bus."""
@@ -39,14 +40,21 @@ class BusMonitor:
         if self._frames and self._frames[-1]["frame"] == message.raw:
             self._frames[-1]["count"] += 1
             return
-        hint = ""
+        hint = section = where = ""
         classified = classify(message)
         if classified is not None:
-            hint = f"{classified.section} {classified.where}"
-            if not self._known(classified.section, classified.where):
+            section, where = classified.section, classified.where
+            hint = f"{section} {where}"
+            if not self._known(section, where):
                 hint += NEW_MARK
-        self._frames.append({"frame": message.raw, "hint": hint,
-                             "time": self._now(), "count": 1})
+        # Section and address on their own as well: the page offers to take an
+        # address over into its list, and must not have to pick the hint apart.
+        # ... and a running number: the page tells by it what it has shown
+        # already, and what came before it was cleared.
+        self._serial += 1
+        self._frames.append({"id": self._serial, "frame": message.raw, "hint": hint,
+                             "section": section, "where": where, "time": self._now(),
+                             "count": 1})
 
     def frames(self) -> list[dict[str, Any]]:
         """Oldest first; copies, so a reader cannot change the monitor."""

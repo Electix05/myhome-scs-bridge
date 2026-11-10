@@ -180,6 +180,86 @@ class TestSavingFromAListThatIsOutOfDate(WebBridgeTestCase):
                 self.assertEqual(handle.read(), before, suffix)
 
 
+class TestTheListIsCheckedBeforeItIsWritten(WebBridgeTestCase):
+    """What the add-on cannot read at its next start never reaches the file."""
+
+    def device_file(self) -> str:
+        with open(self.devices_file, encoding="utf-8") as handle:
+            return handle.read()
+
+    async def test_the_page_learns_row_and_field_of_every_finding(self):
+        rows = {"lights": [{"where": "12", "name": "Küche"}, {"where": "12", "name": "doppelt"},
+                           {"where": "", "name": ""}],
+                "covers": [{"where": "21", "travel_time": -3}]}
+        status, body = await http(self.port, "POST", "/api/check", {"devices": rows})
+        self.assertEqual(status, 200)
+        self.assertEqual([(p["section"], p["index"], p["field"])
+                          for p in json.loads(body)["problems"]],
+                         [("lights", 1, "where"), ("covers", 0, "travel_time")])
+
+    async def test_a_list_with_a_finding_is_refused_and_the_file_stays(self):
+        before = self.device_file()
+        revision = self.bridge.revision
+        status, body = await http(self.port, "POST", "/api/devices", {
+            "revision": revision,
+            "devices": {"lights": [{"where": "12"}], "switches": [{"where": "12"}]}})
+        self.assertEqual(status, 422)
+        answer = json.loads(body)
+        self.assertEqual([(p["section"], p["index"]) for p in answer["problems"]],
+                         [("switches", 0)])
+        self.assertEqual(self.device_file(), before)
+        self.assertEqual(self.bridge.revision, revision)
+        self.assertFalse(self.bridge.web_status()["restart_pending"])
+
+    async def test_asking_leaves_no_trace(self):
+        published = len(self.mqtt.published)
+        sent = len(self.fake.received)
+        with self.assertNoLogs("myhome_scs_mqtt.app", "WARNING"):
+            await http(self.port, "POST", "/api/check",
+                       {"devices": {"switches": [{"where": "14", "device_class": "toaster"}]}})
+        await asyncio.sleep(0.1)
+        self.assertEqual(len(self.mqtt.published), published)
+        self.assertEqual(len(self.fake.received), sent)
+        self.assertEqual(len(self.bridge.registry.device_entities()), 5)
+
+
+class TestInventory(WebBridgeTestCase):
+    async def inventory(self) -> dict:
+        status, body = await http(self.port, "GET", "/api/inventory")
+        self.assertEqual(status, 200)
+        return json.loads(body)
+
+    async def test_what_was_found_on_the_bus_is_marked_as_new(self):
+        first = await self.inventory()
+        self.assertEqual((first["revision"], first["new"]), (self.bridge.revision, []))
+        self.assertEqual([item["where"] for item in first["devices"]["lights"]], ["12"])
+        await self.fake.emit("*2*1*77##")
+        self.assertTrue(await wait_until(lambda: self.bridge.registry.known("covers", "77")))
+        second = await self.inventory()
+        self.assertEqual(second["new"], ["covers|77"])
+        self.assertNotEqual(second["revision"], first["revision"])
+        self.assertEqual([item["where"] for item in second["devices"]["covers"]], ["21", "77"])
+
+    async def test_once_saved_a_device_is_no_longer_new(self):
+        await self.fake.emit("*2*1*77##")
+        self.assertTrue(await wait_until(lambda: self.bridge.registry.known("covers", "77")))
+        inventory = await self.inventory()
+        status, _body = await http(self.port, "POST", "/api/devices", {
+            "revision": inventory["revision"], "devices": inventory["devices"]})
+        self.assertEqual(status, 200)
+        self.assertEqual((await self.inventory())["new"], [])
+
+    async def test_the_monitor_numbers_its_frames_and_names_section_and_address(self):
+        await self.fake.emit("*1*1*12##")
+        await self.fake.emit("*1*1*33##")
+        self.assertTrue(await wait_until(lambda: len(self.bridge.monitor.frames()) >= 2))
+        _status, body = await http(self.port, "GET", "/api/frames")
+        frames = [f for f in json.loads(body)["frames"] if f["frame"].startswith("*1*1*")]
+        self.assertEqual([(f["section"], f["where"]) for f in frames],
+                         [("lights", "12"), ("lights", "33")])
+        self.assertLess(frames[0]["id"], frames[1]["id"])
+
+
 class TestSavingWhileTheDeviceFileIsUnreadable(WebBridgeTestCase):
     """The page only shows what the bridge could read.
 

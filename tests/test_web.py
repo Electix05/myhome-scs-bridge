@@ -189,6 +189,9 @@ class FakeBridge:
         self.restarts = 0
         self.purges = 0
         self.purge_result: int | None = 3
+        # What the check answers, and every list it was asked about.
+        self.problems: list[dict] = []
+        self.checked: list[object] = []
         self.save_error: BaseException | None = None
         self.status_error: BaseException | None = None
 
@@ -198,7 +201,9 @@ class FakeBridge:
                            frames=lambda: [{"frame": "*1*1*12##", "hint": "lights 12",
                                             "time": "12:00:00", "count": 1}],
                            send_frame=self.send_frame, scan=self.scans.append,
-                           restart=self.restart, purge=self.purge)
+                           restart=self.restart, purge=self.purge, check=self.check,
+                           inventory=lambda: {"revision": 7, "new": ["lights|12"],
+                                              "devices": {"lights": [{"where": "12"}]}})
 
     def status(self) -> dict:
         if self.status_error is not None:
@@ -214,6 +219,12 @@ class FakeBridge:
     async def purge(self) -> int | None:
         self.purges += 1
         return self.purge_result
+
+    def check(self, sections: object) -> list[dict]:
+        if not isinstance(sections, dict):
+            raise ValueError("Die Geräteliste muss ein Objekt sein.")
+        self.checked.append(sections)
+        return list(self.problems)
 
     async def send_frame(self, frame: str) -> str:
         self.sent.append(frame)
@@ -254,8 +265,17 @@ class TestPageAndRoutes(ServerTestCase):
     async def test_the_page_escapes_what_it_shows(self):
         _status, body = await http(self.port, "GET", "/")
         self.assertIn("const esc", body)
-        self.assertIn("esc(x.frame)", body)
-        self.assertIn("esc(x.hint", body)
+        # Frames, hints, tiles and findings come from the bus and from the
+        # device file: they go into the page as text, never as markup.
+        frames = body[body.index("function showFrames"):body.index("const frameLabel")]
+        self.assertIn("left.textContent", frames)
+        self.assertIn("label.textContent = frameLabel(x)", frames)
+        self.assertNotIn("innerHTML +=", body)
+        for function, end in (("function tiles", "async function refresh"),
+                              ("function mark", "function render"),
+                              ("function showFrames", "function togglePause")):
+            part = body[body.index(function):body.index(end)]
+            self.assertNotRegex(part, r"innerHTML = [^']", function)
 
     async def test_the_page_restarts_only_after_a_confirmed_save(self):
         # Shipped with the old page: a failed save still said "saved" and
@@ -350,6 +370,74 @@ class TestPageAndRoutes(ServerTestCase):
         self.assertIn("dataset.armed", notes)
         self.assertIn("api/purge", notes)
         self.assertIn("s.mqtt_connected", body)
+
+    async def test_a_list_with_findings_is_not_written(self):
+        # Whatever the page checked before: the add-on looks itself, last.
+        self.bridge.problems = [{"section": "lights", "index": 0, "field": "where",
+                                 "text": "Diese Adresse steht schon in Zeile 1."}]
+        for payload in ({"lights": [{"where": "12"}]},
+                        {"revision": 7, "devices": {"lights": [{"where": "12"}]}}):
+            status, body = await http(self.port, "POST", "/api/devices", payload)
+            self.assertEqual(status, 422)
+            answer = json.loads(body)
+            self.assertFalse(answer["ok"])
+            self.assertEqual(answer["problems"], self.bridge.problems)
+        self.assertEqual(self.bridge.saved, [])
+
+    async def test_the_page_can_ask_what_is_wrong_with_its_list(self):
+        self.bridge.problems = [{"section": "lights", "index": 1, "field": "", "text": "x"}]
+        rows = {"lights": [{"where": "12"}, {"where": "", "name": "ohne Adresse"}]}
+        status, body = await http(self.port, "POST", "/api/check", {"devices": rows})
+        self.assertEqual((status, json.loads(body)), (200, {"problems": self.bridge.problems}))
+        # Rows without an address go to the check as they are - that is what
+        # it is there to find; nothing is written by asking.
+        self.assertEqual(self.bridge.checked, [rows])
+        self.assertEqual(self.bridge.saved, [])
+        await http(self.port, "POST", "/api/check", rows)        # the plain form
+        self.assertEqual(self.bridge.checked, [rows, rows])
+        self.assertEqual((await http(self.port, "POST", "/api/check", raw_body=b"[1]"))[0], 400)
+        self.assertEqual((await http(self.port, "GET", "/api/check"))[0], 405)
+
+    async def test_list_revision_and_new_devices_come_in_one_answer(self):
+        status, body = await http(self.port, "GET", "/api/inventory")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {"revision": 7, "new": ["lights|12"],
+                                            "devices": {"lights": [{"where": "12"}]}})
+
+    async def test_the_page_checks_before_it_saves(self):
+        _status, body = await http(self.port, "GET", "/")
+        save = body[body.index("async function save"):body.index("async function scan")]
+        # The look at the list comes first, and nothing goes out with findings.
+        self.assertLess(save.index("await check()"), save.index("api/devices"))
+        self.assertIn("r.status === 422", save)
+        # Every change of the list asks again, a little later.
+        self.assertIn("checkSoon();", body[body.index("function touched"):
+                                           body.index("function changed")])
+        self.assertIn("post('api/check', {devices: DATA})", body)
+        # An answer that was overtaken does not paint over a newer one.
+        self.assertIn("run !== checkRun", body)
+
+    async def test_the_page_shows_the_state_in_tiles(self):
+        _status, body = await http(self.port, "GET", "/")
+        tiles = body[body.index("function tiles"):body.index("async function refresh")]
+        for field in ("s.connected", "s.mqtt_connected", "s.devices", "s.silenced",
+                      "s.sent_per_minute", "s.received_per_minute", "s.queue", "s.dropped",
+                      "s.brake_gap", "s.refused", "s.unanswered", "s.scan_progress"):
+            self.assertIn(field, tiles)
+        self.assertIn("s.version", body)
+        # One scan at a time.
+        self.assertIn("b.disabled = !!s.scanning", body)
+        self.assertEqual(body.count('class="scan"'), 2)
+
+    async def test_the_monitor_stands_still_while_somebody_reads(self):
+        _status, body = await http(self.port, "GET", "/")
+        frames = body[body.index("function showFrames"):body.index("const frameLabel")]
+        for reason in ("paused", "box.scrollTop", "selection"):
+            self.assertIn(reason, frames)
+        # The promise of the hint text is kept: an unknown address can be taken over.
+        self.assertIn("übernehmen“", body)
+        self.assertIn("function takeOver", body)
+        self.assertIn("api/inventory", body)
 
     async def test_an_empty_or_broken_request_never_empties_the_device_file(self):
         for raw in (b"", b"   ", b"{not json", b"[1, 2]", b"\xff\xfe"):
