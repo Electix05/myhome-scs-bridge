@@ -143,6 +143,15 @@ class TestStaleTopics(unittest.TestCase):
         self.assertEqual(stale, ["homeassistant/binary_sensor/scs_bridge/scs_bridge_25_7/config"])
 
 
+def gone(count: int) -> list[str]:
+    """What the broker still holds of ``count`` lamps the bridge no longer knows."""
+    topics = []
+    for where in range(50, 50 + count):
+        topics += [f"homeassistant/light/scs_bridge/scs_bridge_1_{where}/config",
+                   f"myhome/light/{where}/state", f"myhome/light/{where}/name"]
+    return topics
+
+
 class TestPurge(unittest.IsolatedAsyncioTestCase):
     async def test_purge_publishes_empty_retained_messages(self):
         discovery, publisher, _registry = make(collect=lambda *_args: LEFTOVERS)
@@ -153,6 +162,72 @@ class TestPurge(unittest.IsolatedAsyncioTestCase):
                    if payload == "" and retain and qos == 1]
         self.assertEqual(len(cleared), 5)
         self.assertNotIn("homeassistant/sensor/tasmota_kitchen/config", cleared)
+
+    async def test_many_devices_at_once_are_held_until_confirmed(self):
+        # A wrong devices_file, an add-on moved without its data: the bridge
+        # then knows none of the devices the broker holds.  Removing their
+        # announcements makes Home Assistant forget name, area and history.
+        leftovers = gone(8)
+        discovery, publisher, _registry = make(collect=lambda *_args: leftovers)
+        with self.assertLogs(discovery_module._LOGGER, "WARNING") as logs:
+            self.assertEqual(await discovery.purge_stale(), 0)
+        self.assertEqual(publisher.published, [])
+        self.assertEqual(discovery.held.as_dict(), {
+            "devices": 8, "entities": 8,
+            "examples": [f"light/{where}" for where in range(50, 58)]})
+        self.assertIn("8 devices", logs.records[0].getMessage())
+
+        with self.assertLogs(discovery_module._LOGGER, "INFO"):
+            self.assertEqual(await discovery.purge_stale(confirmed=True), 24)
+        self.assertIsNone(discovery.held)
+        cleared = {topic for topic, payload, _retain, _qos in publisher.published
+                   if payload == ""}
+        self.assertEqual(cleared, set(leftovers))
+
+    async def test_a_handful_of_devices_goes_without_asking(self):
+        # That is what removing devices in the device file looks like.
+        leftovers = gone(discovery_module.PURGE_LIMIT_DEVICES)
+        discovery, publisher, _registry = make(collect=lambda *_args: leftovers)
+        with self.assertLogs(discovery_module._LOGGER, "INFO"):
+            self.assertEqual(await discovery.purge_stale(), len(leftovers))
+        self.assertIsNone(discovery.held)
+        self.assertEqual(len(publisher.published), len(leftovers))
+
+    async def test_a_keypad_with_all_its_buttons_is_one_device(self):
+        leftovers = ["myhome/keypad/22/name"] + [
+            f"homeassistant/event/scs_bridge/scs_bridge_25_22_btn{button}/config"
+            for button in range(1, 9)]
+        discovery, _publisher, _registry = make(collect=lambda *_args: leftovers)
+        with self.assertLogs(discovery_module._LOGGER, "INFO"):
+            self.assertEqual(await discovery.purge_stale(), 9)
+
+    async def test_entities_that_vanish_without_their_device_are_held(self):
+        # Every device is still there and its announcements are not: that is
+        # no removal, that is a mistake - in the file or in the add-on.
+        leftovers = [f"homeassistant/light/scs_bridge/scs_bridge_1_12_x{number}/config"
+                     for number in range(6)]
+        discovery, publisher, _registry = make(collect=lambda *_args: leftovers)
+        with self.assertLogs(discovery_module._LOGGER, "WARNING"):
+            self.assertEqual(await discovery.purge_stale(), 0)
+        self.assertEqual(publisher.published, [])
+        self.assertEqual((len(discovery.held.devices), discovery.held.entities), (6, 6))
+
+    async def test_states_without_an_announcement_cost_home_assistant_nothing(self):
+        leftovers = [f"myhome/light/{where}/state" for where in range(50, 70)]
+        discovery, _publisher, _registry = make(collect=lambda *_args: leftovers)
+        with self.assertLogs(discovery_module._LOGGER, "INFO"):
+            self.assertEqual(await discovery.purge_stale(), 20)
+
+    async def test_a_later_start_with_less_to_remove_lets_go_of_the_hold(self):
+        stored = gone(8)
+        discovery, _publisher, _registry = make(collect=lambda *_args: stored)
+        with self.assertLogs(discovery_module._LOGGER, "WARNING"):
+            await discovery.purge_stale()
+        self.assertIsNotNone(discovery.held)
+        del stored[6:]                              # two devices are left over
+        with self.assertLogs(discovery_module._LOGGER, "INFO"):
+            self.assertEqual(await discovery.purge_stale(), 6)
+        self.assertIsNone(discovery.held)
 
     async def test_nothing_is_removed_when_the_broker_cannot_be_asked(self):
         discovery, publisher, _registry = make(collect=lambda *_args: None)

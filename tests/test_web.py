@@ -174,14 +174,21 @@ class TestRestartRequest(unittest.TestCase):
         error.close.assert_called_once()
 
 
+NO_REVISION = "no revision"
+
+
 class FakeBridge:
     """Records what the web interface asks for."""
 
     def __init__(self) -> None:
         self.saved: list[dict] = []
+        # The revision each save came with; NO_REVISION for the plain form.
+        self.revisions: list[object] = []
         self.sent: list[str] = []
         self.scans: list[bool] = []
         self.restarts = 0
+        self.purges = 0
+        self.purge_result: int | None = 3
         self.save_error: BaseException | None = None
         self.status_error: BaseException | None = None
 
@@ -191,17 +198,22 @@ class FakeBridge:
                            frames=lambda: [{"frame": "*1*1*12##", "hint": "lights 12",
                                             "time": "12:00:00", "count": 1}],
                            send_frame=self.send_frame, scan=self.scans.append,
-                           restart=self.restart)
+                           restart=self.restart, purge=self.purge)
 
     def status(self) -> dict:
         if self.status_error is not None:
             raise self.status_error
         return {"connected": True, "refused": 2, "unanswered": 1}
 
-    async def save_devices(self, sections: dict) -> None:
+    async def save_devices(self, sections: dict, revision: object = NO_REVISION) -> None:
         if self.save_error is not None:
             raise self.save_error
         self.saved.append(sections)
+        self.revisions.append(revision)
+
+    async def purge(self) -> int | None:
+        self.purges += 1
+        return self.purge_result
 
     async def send_frame(self, frame: str) -> str:
         self.sent.append(frame)
@@ -273,6 +285,71 @@ class TestPageAndRoutes(ServerTestCase):
         status, body = await http(self.port, "POST", "/api/devices", payload)
         self.assertEqual((status, json.loads(body)), (200, {"ok": True}))
         self.assertEqual(self.bridge.saved, [payload])
+        self.assertEqual(self.bridge.revisions, [NO_REVISION])
+
+    async def test_saving_devices_together_with_the_revision_of_the_list(self):
+        # What the page sends: the list and the state it was loaded at.
+        devices = {"lights": [{"where": "12", "name": "Küche"}]}
+        status, body = await http(self.port, "POST", "/api/devices",
+                                  {"revision": 7, "devices": devices})
+        self.assertEqual((status, json.loads(body)), (200, {"ok": True}))
+        self.assertEqual((self.bridge.saved, self.bridge.revisions), ([devices], [7]))
+        # Without a number there is nothing to compare - saved like the plain form.
+        await http(self.port, "POST", "/api/devices", {"devices": devices})
+        self.assertEqual(self.bridge.revisions, [7, NO_REVISION])
+        # The checks of the list apply to this form as well.
+        status, _body = await http(self.port, "POST", "/api/devices",
+                                   {"revision": 7, "devices": {"lights": [{"where": 4}]}})
+        self.assertEqual(status, 400)
+        status, _body = await http(self.port, "POST", "/api/devices",
+                                   {"revision": "7", "devices": devices})
+        self.assertEqual(status, 400)
+        self.assertEqual(len(self.bridge.saved), 2)
+
+    async def test_a_list_that_is_out_of_date_answers_409(self):
+        self.bridge.save_error = server_module.WebError("409 Conflict", "inzwischen geändert")
+        status, body = await http(self.port, "POST", "/api/devices",
+                                  {"revision": 7, "devices": {"lights": [{"where": "12"}]}})
+        self.assertEqual(status, 409)
+        self.assertEqual(json.loads(body), {"ok": False, "error": "inzwischen geändert"})
+
+    async def test_confirming_a_clean_up(self):
+        status, body = await http(self.port, "POST", "/api/purge", {})
+        self.assertEqual((status, json.loads(body)), (200, {"ok": True, "removed": 3}))
+        self.bridge.purge_result = None
+        status, body = await http(self.port, "POST", "/api/purge")
+        self.assertEqual(status, 200)
+        self.assertFalse(json.loads(body)["ok"])
+        self.assertEqual(self.bridge.purges, 2)
+        self.assertEqual((await http(self.port, "GET", "/api/purge"))[0], 405)
+
+    async def test_the_page_brings_its_list_up_to_date_before_it_saves(self):
+        _status, body = await http(self.port, "GET", "/")
+        save = body[body.index("async function save"):body.index("async function scan")]
+        # The list goes out with the state it was loaded at ...
+        self.assertIn("revision: REVISION", save)
+        # ... a refusal is handled before anything counts as saved ...
+        self.assertLess(save.index("r.status === 409"), save.index("dirty = false"))
+        self.assertLess(save.index("r.status === 409"), save.index("api/restart"))
+        # ... and the page notices by itself when the add-on's list moved on.
+        self.assertIn("s.revision !== REVISION", body)
+        # Rows removed here are not brought back, changed ones not doubled.
+        merge = body[body.index("function merge"):body.index("async function syncDevices")]
+        self.assertIn("REMOVED.has", merge)
+        self.assertIn("ORIGIN.get", merge)
+
+    async def test_the_page_shows_what_needs_a_decision(self):
+        _status, body = await http(self.port, "GET", "/")
+        notes = body[body.index("function notes"):body.index("async function sendFrame")]
+        for field in ("s.problems", "s.purge_held", "s.restart_pending"):
+            self.assertIn(field, notes)
+        # Whatever comes from the add-on goes in as text, never as markup.
+        self.assertNotIn("innerHTML = s.", notes)
+        self.assertNotIn("innerHTML +=", notes)
+        # Removing devices from Home Assistant takes a second click.
+        self.assertIn("dataset.armed", notes)
+        self.assertIn("api/purge", notes)
+        self.assertIn("s.mqtt_connected", body)
 
     async def test_an_empty_or_broken_request_never_empties_the_device_file(self):
         for raw in (b"", b"   ", b"{not json", b"[1, 2]", b"\xff\xfe"):

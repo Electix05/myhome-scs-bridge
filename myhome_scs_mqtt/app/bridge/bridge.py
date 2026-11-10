@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import secrets
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -25,7 +26,7 @@ from ..settings import (
     DEFAULT_INSTANCE_ID, Settings, atomic_write_text, load_devices, write_device_file,
 )
 from ..web.monitor import BusMonitor
-from ..web.server import WebHandlers, WebServer, frame_problem, request_restart
+from ..web.server import WebError, WebHandlers, WebServer, frame_problem, request_restart
 from .background import BackgroundTasks
 from .discovery import Collector, Discovery
 from .registry import FACTORIES, Registry, load_discovered, save_discovered
@@ -150,11 +151,27 @@ class Bridge:
                 send_frame=self.web_send_frame,
                 scan=self.trigger_scan,
                 restart=self.schedule_restart,
+                purge=self.web_confirm_purge,
             ),
             **(web_options or {}),
         )
 
         self.inventory_complete = True
+        # Why the inventory is incomplete, in words for the web interface.
+        self.inventory_problems: list[str] = []
+        # True while the device file holds entries that could not be read.
+        self.saving_blocked = False
+        # Counts every change of what the bridge knows about its devices.  The
+        # page shows a copy of that list; a save from a copy that is out of
+        # date would write devices away that were found in the meantime.  It
+        # starts somewhere else with every start, so a page that was open
+        # across a restart never holds a number that happens to fit again.
+        self.revision = secrets.randbelow(2 ** 31)
+        # What the web interface saved since the start.  It only takes effect
+        # with the next start, but the page has to show it all the same -
+        # otherwise a reload brings the old list back, and the next save
+        # writes that over the new file.
+        self._saved_sections: dict[str, list[dict[str, Any]]] | None = None
         self._log = RepeatLimiter(_LOGGER)
         self._request_restart = restart
         self._restart_task: asyncio.Task[None] | None = None
@@ -178,10 +195,23 @@ class Bridge:
         if self.settings.auto_discover:
             discovered, discovered_complete = await asyncio.to_thread(
                 load_discovered, self.settings.discovered_file)
-        self.inventory_complete = definitions.complete and discovered_complete
-
         self.registry.register(self.status)
         self.registry.build(definitions.sections, discovered)
+        # Complete means: every device somebody wrote down or the bridge once
+        # found has become an entity.  A mistyped section name or a value a
+        # device type cannot read leaves a device out just like a broken file
+        # does - and removing its entity would make Home Assistant forget it.
+        file_problems = [*definitions.problems, *self.registry.problems]
+        self.inventory_problems = [*file_problems, *self.registry.memory_problems]
+        if not discovered_complete:
+            self.inventory_problems.append(
+                "Das Gedächtnis der automatisch erkannten Geräte ist nicht lesbar")
+        self.inventory_complete = not self.inventory_problems
+        # The page writes the whole device file anew from what the bridge
+        # knows.  Entries it could not read are not part of that - a save
+        # would delete them from the file, and the next start would see a
+        # complete list without them.
+        self.saving_blocked = bool(file_problems)
         for topic in self.registry.topics:
             self.mqtt.subscribe(topic)
         # Up before MQTT: while a broker is still missing after a power cut,
@@ -296,8 +326,12 @@ class Bridge:
             return
         # Scan only when there would otherwise be nothing to show: a fresh
         # installation configures itself, a known one starts up quickly.
+        # ... and not while a clean-up waits for its confirmation: then the
+        # broker still knows devices this start did not find, so the list is
+        # not empty because the installation is new - something is wrong, and
+        # a scan would bury that under freshly found devices.
         if (self.settings.scan.on_start and not self._scanned and self.inventory_complete
-                and not self.registry.device_entities()):
+                and self.discovery.held is None and not self.registry.device_entities()):
             _LOGGER.info("No devices known yet - starting an initial bus scan")
             self.trigger_scan()
         else:
@@ -324,6 +358,7 @@ class Bridge:
             self.mqtt.subscribe(topic)
         if self.registry.remember(entity):
             self._schedule_save()
+        self.revision += 1
         entity.republish()
 
     # ------------------------------------------------------- auto discovery
@@ -341,6 +376,7 @@ class Bridge:
             self.mqtt.subscribe(topic)
         self.discovery.publish_entity(entity)
         self._schedule_save()
+        self.revision += 1
         _LOGGER.info("Auto-discovered %s at WHERE=%s (%s)",
                      classified.section, classified.where, message.raw)
         return entity
@@ -405,6 +441,16 @@ class Bridge:
             "mqtt_broker": f"{self.settings.mqtt.host}:{self.settings.mqtt.port}",
             "mqtt_connected": self.mqtt.connected,
             "subscriptions": len(self.mqtt.subscriptions),
+            # The page compares this with the copy of the list it shows.
+            "revision": self.revision,
+            # Why nothing is removed from Home Assistant at the moment.
+            "problems": list(self.inventory_problems),
+            # The device file has entries the page cannot show - no saving.
+            "saving_blocked": self.saving_blocked,
+            # A clean-up that waits for its confirmation, or None.
+            "purge_held": None if self.discovery.held is None else self.discovery.held.as_dict(),
+            # Saved from the page, but only read again with the next start.
+            "restart_pending": self._saved_sections is not None,
             **self.background.bus_load(),
         }
 
@@ -418,25 +464,85 @@ class Bridge:
         return sections
 
     def web_devices(self) -> dict[str, list[dict[str, Any]]]:
-        """Everything the bridge knows - configured and discovered alike."""
-        return self._device_sections()
+        """Everything the bridge knows - configured and discovered alike.
 
-    async def web_save_devices(self, sections: dict[str, list[dict[str, Any]]]) -> None:
+        Once the page has saved, that is what it gets back, plus whatever was
+        found on the bus since: the running entities still are the old list
+        until the next start, and showing those again would let the next save
+        write the old list over the new file.
+        """
+        if self._saved_sections is None:
+            return self._device_sections()
+        sections = {section: [dict(item) for item in items]
+                    for section, items in self._saved_sections.items()}
+        for entity in self.registry.device_entities():
+            if not self.registry.is_remembered(entity):
+                continue
+            items = sections.setdefault(entity.section, [])
+            if not any(str(item.get("where")) == entity.where for item in items):
+                items.append(entity.to_config())
+        for items in sections.values():
+            items.sort(key=lambda item: str(item.get("where", "")))
+        return sections
+
+    async def web_save_devices(self, sections: dict[str, list[dict[str, Any]]],
+                               revision: int | None = None) -> None:
         """Write the device file; from then on every device is an explicit entry.
 
+        ``revision`` is the state of the list the page had in front of it.  A
+        save from a list that is out of date is refused: the devices found in
+        the meantime are not in it, and writing it would drop them from the
+        file and from the discovery memory at once.
+
+        Refused as well while the device file holds entries the bridge could
+        not read (a mistyped section, a value that does not fit): the page
+        never saw them, so the new file would be written without them.
+
         Raises:
+            WebError: 423 while the device file could not be read completely,
+                409 when the list changed since the page loaded it.
             OSError: when the file cannot be written - the old one stays.
         """
+        if self.saving_blocked:
+            raise WebError("423 Locked",
+                           "Die Gerätedatei konnte nicht vollständig gelesen werden. Speichern "
+                           "würde die nicht gelesenen Einträge löschen - erst die Datei "
+                           "korrigieren und das Add-on neu starten.")
+        if revision is not None and revision != self.revision:
+            raise WebError("409 Conflict",
+                           "Die Geräteliste hat sich inzwischen geändert - nichts gespeichert.")
+        # Exactly these are in the file afterwards.  A device that shows up
+        # while the disk is busy is in neither place and stays remembered.
+        remembered = list(self.registry.discovered)
         # Rendering and writing both in a worker thread: the old add-on did it
         # on the event loop, and a slow disk froze the bus meanwhile.
         await asyncio.to_thread(write_device_file, self.settings.devices_file, sections,
                                 tuple(FACTORIES))
-        # Everything is in the file now; the discovery memory would only
-        # produce duplicates on the next start.
-        self.registry.forget_discovered()
-        await asyncio.to_thread(save_discovered, self.settings.discovered_file, [])
+        # They would only produce duplicates on the next start.
+        self.registry.forget_discovered(remembered)
+        await asyncio.to_thread(save_discovered, self.settings.discovered_file,
+                                [dict(item) for item in self.registry.discovered])
+        self._saved_sections = {section: [dict(item) for item in items]
+                                for section, items in sections.items() if items}
+        self.revision += 1
         _LOGGER.info("Device file written from the web interface: %d sections",
                      len([items for items in sections.values() if items]))
+
+    async def web_confirm_purge(self) -> int | None:
+        """Run the clean-up that was held back; the removed topics or None.
+
+        Asked for in the web interface, after somebody looked at the list of
+        devices that would go.  What is stale is worked out afresh: a device
+        that came back in the meantime stays.  None when the broker could not
+        be asked or the inventory is incomplete - then nothing is removed.
+        """
+        if self._stopped or not self.inventory_complete:
+            return None
+        removed = await self.discovery.purge_stale(confirmed=True)
+        if removed is not None:
+            _LOGGER.warning("Clean-up confirmed in the web interface: %d leftover topics "
+                            "removed from the broker", removed)
+        return removed
 
     async def web_send_frame(self, frame: str) -> str:
         """Put a hand-written frame on the bus; returns why not, or "".

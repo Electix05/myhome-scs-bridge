@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
 from typing import Callable, Protocol
 
 from ..devices.base import Entity
@@ -27,7 +28,38 @@ _LOGGER = logging.getLogger(__name__)
 RETIRED_BRIDGE_TOPICS = ("last_frame",)
 INVENTORY_SECONDS = 3.0
 
+# The safety belt of the clean-up.  Removing a retained discovery message makes
+# Home Assistant forget the entity - its name, its area, its place in every
+# automation.  A few devices at a time is what removing them in the device file
+# looks like.  Many at once is what a mistake looks like: a device file path
+# that points nowhere, an add-on that was moved without its data, a discovery
+# memory that is no longer read.  Then nothing is removed until somebody
+# confirms it in the web interface.
+PURGE_LIMIT_DEVICES = 5
+# A device announces up to eight entities (a keypad); more leftover
+# announcements than the devices that went away can explain are held as well -
+# entities that vanish while their device stays are no ordinary removal.
+ENTITIES_PER_DEVICE = 8
+PURGE_EXAMPLES = 20
+
 Collector = Callable[[MqttConfig, list[str], float], "list[str] | None"]
+
+
+@dataclass(frozen=True)
+class HeldPurge:
+    """A clean-up that was too big to run without being asked.
+
+    ``devices`` are the topic roots below the base topic that would go
+    (``light/12``), ``entities`` counts the discovery messages.
+    """
+
+    devices: tuple[str, ...]
+    entities: int
+
+    def as_dict(self) -> dict[str, object]:
+        """For the web interface: counts and the first few names."""
+        return {"devices": len(self.devices), "entities": self.entities,
+                "examples": list(self.devices[:PURGE_EXAMPLES])}
 
 
 class Publisher(Protocol):
@@ -44,6 +76,8 @@ class Discovery:
         self.config = config
         self._collect = collect
         self._reported_unconfigured: set[str] = set()
+        # Set while a clean-up waits for its confirmation, see purge_stale().
+        self.held: HeldPurge | None = None
 
     @property
     def prefix(self) -> str:
@@ -151,11 +185,38 @@ class Discovery:
                     stale.append(topic)
         return stale
 
-    async def purge_stale(self) -> int | None:
+    def too_much(self, stale: list[str]) -> HeldPurge | None:
+        """What a clean-up of ``stale`` would take away, if that is a lot.
+
+        None when it is small enough to simply run (see PURGE_LIMIT_DEVICES).
+        """
+        bridge_prefix = f"{self.base}/bridge/"
+        devices: set[str] = set()
+        entities: list[str] = []
+        for topic in stale:
+            if self._is_our_config(topic):
+                entities.append(topic.split("/")[-2])
+            elif topic.startswith(self.base + "/") and not topic.startswith(bridge_prefix):
+                parts = topic[len(self.base) + 1:].split("/")
+                if len(parts) >= 2:
+                    devices.add("/".join(parts[:2]))
+        if not entities:
+            # Only states and names: Home Assistant loses nothing with those.
+            return None
+        explained = len(devices) * ENTITIES_PER_DEVICE
+        if len(devices) <= PURGE_LIMIT_DEVICES and len(entities) <= explained + PURGE_LIMIT_DEVICES:
+            return None
+        # Entities without a device that went away: name them by their id.
+        names = sorted(devices) or sorted(entities)
+        return HeldPurge(tuple(names), len(entities))
+
+    async def purge_stale(self, confirmed: bool = False) -> int | None:
         """Remove what the broker still holds for devices that are gone.
 
         Returns the number of removed topics, or None when the broker could not
-        be asked - then nothing is removed.
+        be asked - then nothing is removed.  A clean-up that would take many
+        devices at once removes nothing either and returns 0; it waits in
+        :attr:`held` until it is asked for again with ``confirmed=True``.
         """
         patterns = [f"{self.base}/#", f"{self.prefix}/+/{self.node}/+/config"]
         stored = await asyncio.to_thread(self._collect, self.config, patterns,
@@ -164,6 +225,18 @@ class Discovery:
             _LOGGER.warning("Leftovers of removed devices stay in the broker for now")
             return None
         stale = self.stale_topics(stored)
+        self.held = None if confirmed else self.too_much(stale)
+        if self.held is not None:
+            _LOGGER.warning(
+                "%d devices (%d Home Assistant entities) are no longer in the device "
+                "file or the discovery memory: %s%s. That many at once looks like a "
+                "mistake - a wrong devices_file, an add-on moved without its data, a "
+                "typo. Nothing is removed from Home Assistant until it is confirmed in "
+                "the web interface.",
+                len(self.held.devices), self.held.entities,
+                ", ".join(self.held.devices[:PURGE_EXAMPLES]),
+                " ..." if len(self.held.devices) > PURGE_EXAMPLES else "")
+            return 0
         for topic in stale:
             self.publisher.publish(topic, "", retain=True, qos=1)
         if stale:

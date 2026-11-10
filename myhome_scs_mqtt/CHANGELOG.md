@@ -1,5 +1,49 @@
 # Changelog
 
+## 1.24.0
+
+Schutz vor verlorenen Geräten. Home Assistant vergisst eine Entity samt Namen,
+Raum und Verlauf, sobald ihre Anmeldung im Broker gelöscht wird – und das Add-on
+räumt bei jedem Start weg, was es nicht mehr kennt. An mehreren Stellen konnte
+das Geräte treffen, die es noch gibt. Am Bus und an den MQTT-Topics ändert sich
+nichts.
+
+- **Ein Tippfehler löscht keine Geräte mehr.** Ein falsch geschriebener
+  Abschnitt (`ligths:` statt `lights:`) oder ein Wert, den eine Geräteart nicht
+  lesen kann (`travel_time: 25s`), ließ das Gerät bisher still weg – und beim
+  Aufräumen verschwand es aus Home Assistant. Jetzt gilt die Geräteliste dann als
+  unvollständig: Es wird nichts entfernt, bis der Fehler behoben ist. Dasselbe
+  gilt für einen Eintrag im Gedächtnis der erkannten Geräte, der sich nicht lesen
+  lässt.
+- **Viele Geräte auf einmal entfernt das Add-on nicht mehr ungefragt.** Würde ein
+  Start mehr als fünf Geräte aus Home Assistant nehmen, bleibt alles stehen: Im
+  Protokoll und in der Weboberfläche steht, welche Geräte es wären, und erst der
+  Knopf „Aus Home Assistant entfernen“ (zwei Klicks) räumt auf. So sieht kein
+  normales Löschen aus, sondern ein Versehen – ein falscher Pfad in
+  `devices_file`, ein Add-on, das ohne seine Daten umgezogen ist, eine
+  abgeschaltete Geräteerkennung. Bis zu fünf Geräte gehen wie bisher ohne
+  Nachfrage. Solange eine Bestätigung aussteht, startet auch kein automatischer
+  Bus-Scan.
+- **Die Weboberfläche speichert nie mehr eine veraltete Liste.** Die Seite zeigt
+  eine Kopie der Geräteliste. Fand das Add-on danach weitere Geräte, schrieb
+  „Speichern“ sie bisher aus Gerätedatei und Gedächtnis zugleich heraus. Jetzt
+  lädt die Seite neu erkannte Geräte selbst nach; ein Speichern von einem alten
+  Stand lehnt das Add-on ab, die Seite ergänzt die Liste und bittet um ein
+  zweites Speichern. Ein Gerät, das genau während des Schreibens auftaucht,
+  bleibt gemerkt.
+- **Nach „Nur speichern“ zeigt die Seite, was gespeichert wurde.** Bisher brachte
+  ein Neuladen die alte Liste zurück, und das nächste Speichern schrieb sie über
+  die neue Datei. Dazu ein Hinweis, dass die Änderungen erst ab dem nächsten Start
+  gelten, mit Knopf zum Neustarten.
+- **Die ersetzte Gerätedatei bleibt erhalten.** Vor jedem Speichern aus der
+  Weboberfläche liegt der vorherige Stand als `devices.yaml.bak` daneben, der
+  letzte von Hand geschriebene zusätzlich als `devices.yaml.manual.bak` – mit
+  allen Kommentaren, die die Seite nicht kennt.
+- **Die Weboberfläche zeigt mehr:** ob der MQTT-Broker verbunden ist, warum die
+  Geräteliste unvollständig ist und welches Aufräumen auf eine Bestätigung wartet.
+  `/api/status` liefert dafür `revision`, `problems`, `purge_held` und
+  `restart_pending`.
+
 ## 1.23.1
 
 - **Die Weboberfläche zeigt keinen Schriftzug mehr im Hintergrund.** Sonst bleibt

@@ -8,10 +8,12 @@
 :root {
   --bg: #f6f7f9; --card: #fff; --fg: #1c1e21; --muted: #6b7280;
   --line: #e3e6ea; --accent: #03a9f4; --danger: #d93025; --ok: #1a7f37;
+  --warn: #b26a00;
 }
 @media (prefers-color-scheme: dark) {
   :root { --bg:#111418; --card:#1c2026; --fg:#e8eaed; --muted:#9aa0a6;
-          --line:#2c3138; --accent:#4fc3f7; --danger:#f28b82; --ok:#81c995; }
+          --line:#2c3138; --accent:#4fc3f7; --danger:#f28b82; --ok:#81c995;
+          --warn:#fdd663; }
 }
 * { box-sizing: border-box; }
 body { margin:0; padding:16px; background:var(--bg); color:var(--fg);
@@ -44,6 +46,7 @@ input[type=checkbox] { width:17px; height:17px; accent-color:var(--accent); }
 button { padding:7px 13px; border:1px solid var(--line); border-radius:7px;
   background:var(--card); color:var(--fg); font:inherit; cursor:pointer; }
 button:hover { border-color:var(--accent); }
+button:disabled { opacity:.45; cursor:not-allowed; border-color:var(--line); }
 button.primary { background:var(--accent); border-color:var(--accent); color:#08252e; font-weight:600; }
 button.link { border:none; background:none; color:var(--danger); padding:4px 6px; }
 button.small { padding:4px 9px; font-size:12px; }
@@ -62,6 +65,16 @@ button.small { padding:4px 9px; font-size:12px; }
   opacity:0; transition:opacity .2s; pointer-events:none; z-index:2; }
 #toast.show { opacity:1; }
 .hint { color:var(--muted); font-size:12px; margin:6px 0 0; }
+/* What needs a decision or a look: a list that could not be read completely,
+   a clean-up that waits, a save that is not in effect yet. */
+.note { border:1px solid var(--line); border-left:4px solid var(--accent);
+  border-radius:8px; background:var(--card); padding:10px 14px; margin-bottom:12px; }
+.note.warn { border-left-color:var(--warn); }
+.note.bad { border-left-color:var(--danger); }
+.note strong { display:block; margin-bottom:2px; }
+.note ul { margin:6px 0 0; padding-left:18px; }
+.note p { margin:6px 0 0; }
+.note button { margin-top:8px; }
 </style>
 </head>
 <body>
@@ -69,12 +82,15 @@ button.small { padding:4px 9px; font-size:12px; }
 <div class="sub" id="status">wird geladen …</div>
 
 <div class="bar">
-  <button class="primary" onclick="save()">Speichern &amp; neu starten</button>
-  <button onclick="save(false)">Nur speichern</button>
+  <button class="primary save" onclick="save()">Speichern &amp; neu starten</button>
+  <button class="save" onclick="save(false)">Nur speichern</button>
   <button onclick="scan(false)">Bus scannen</button>
   <button onclick="scan(true)">Gründlich scannen</button>
   <span class="pill"><span class="dot" id="link"></span><span id="linktext">Gateway</span></span>
+  <span class="pill"><span class="dot" id="mqtt"></span><span id="mqtttext">MQTT</span></span>
 </div>
+
+<div id="notes"></div>
 
 <div id="sections"></div>
 
@@ -84,7 +100,7 @@ button.small { padding:4px 9px; font-size:12px; }
     <p class="hint">Taster drücken oder Licht schalten – die Adresse erscheint hier und
       lässt sich direkt übernehmen.</p>
     <div class="sendrow">
-      <input id="frame" class="mono" placeholder="*1*1*29##" spellcheck="false"
+      <input id="frame" type="text" class="mono" placeholder="*1*1*29##" spellcheck="false"
              autocomplete="off" onkeydown="if (event.key === 'Enter') sendFrame()">
       <button onclick="sendFrame()">Senden</button>
     </div>
@@ -98,10 +114,26 @@ button.small { padding:4px 9px; font-size:12px; }
 
 <script>
 let SCHEMA = {}, DATA = {}, dirty = false;
+// The state of the device list this page shows.  The add-on counts on with
+// every device it finds; a save from a list that is behind would write those
+// devices away, so the list is brought up to date first (see syncDevices).
+let REVISION;
+// The address every row was loaded with, and the rows removed by hand - so
+// bringing the list up to date neither doubles a row whose address was
+// changed nor brings back one that was just removed.
+const ORIGIN = new WeakMap();
+const REMOVED = new Set();
+let notesShown = '';
 
 const api = (p, o) => fetch(p, o).then(r => r.json());
-const toast = (t) => { const e = document.getElementById('toast');
-  e.textContent = t; e.classList.add('show'); setTimeout(() => e.classList.remove('show'), 2600); };
+// POST with a JSON body; the answer carries the HTTP status as well.
+const post = (p, body) => fetch(p, {method: 'POST',
+  headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})
+  .then(async r => Object.assign(await r.json(), {status: r.status}));
+let toastTimer;
+const toast = (t, ms = 2600) => { const e = document.getElementById('toast');
+  e.textContent = t; e.classList.add('show'); clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => e.classList.remove('show'), ms); };
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c =>
   ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
@@ -112,10 +144,53 @@ function toggle(h) {
 
 async function load() {
   SCHEMA = await api('api/schema');
-  DATA = await api('api/devices');
+  // The revision first: a device found between the two requests is then in
+  // the list already, and the next look at the status merely loads it again.
+  REVISION = (await api('api/status')).revision;
+  adopt(await api('api/devices'));
   render();
   refresh();
   setInterval(refresh, 3000);
+}
+
+const key = (section, where) => section + '|' + String(where == null ? '' : where);
+const found = (n) => n === 1 ? 'Ein neu erkanntes Gerät steht jetzt in der Liste.' :
+  n + ' neu erkannte Geräte stehen jetzt in der Liste.';
+
+function adopt(data) {
+  DATA = data;
+  REMOVED.clear();
+  for (const items of Object.values(DATA))
+    for (const item of items) ORIGIN.set(item, String(item.where || ''));
+}
+
+// Take over the devices the add-on knows and this page does not; what was
+// edited here stays as it is.  Returns how many rows were added.
+function merge(fresh) {
+  let added = 0;
+  for (const [section, items] of Object.entries(fresh)) {
+    const mine = DATA[section] = DATA[section] || [];
+    for (const item of items) {
+      const where = String(item.where || '');
+      if (REMOVED.has(key(section, where))) continue;
+      if (mine.some(i => ORIGIN.get(i) === where || String(i.where || '') === where)) continue;
+      ORIGIN.set(item, where);
+      mine.push(item);
+      added++;
+    }
+  }
+  return added;
+}
+
+// The add-on's list has moved on.  Without changes of our own we simply show
+// the new one; with changes the newly found devices join them.
+async function syncDevices(revision) {
+  const fresh = await api('api/devices');
+  let added = 0;
+  if (dirty) added = merge(fresh); else adopt(fresh);
+  REVISION = revision;
+  if (!dirty || added) render();
+  return added;
 }
 
 function render() {
@@ -209,7 +284,9 @@ function row(section, spec, item, index) {
 
   const del = document.createElement('button');
   del.className = 'link'; del.title = 'Entfernen'; del.textContent = '✕';
-  del.onclick = () => { DATA[section].splice(index, 1); dirty = true; render(); };
+  del.onclick = () => { DATA[section].splice(index, 1); dirty = true;
+    if (ORIGIN.get(item)) REMOVED.add(key(section, ORIGIN.get(item)));
+    render(); };
   tr.appendChild(cell(del));
   return tr;
 }
@@ -224,15 +301,28 @@ async function save(restart = true) {
   }
   let r;
   try {
-    r = await api('api/devices', {method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(clean)});
+    r = await post('api/devices', {revision: REVISION, devices: clean});
   } catch (e) { toast('Keine Verbindung zum Add-on – nichts gespeichert.'); return; }
+  if (r.status === 409) {
+    // The add-on found devices this page did not show yet.  Saved as it is,
+    // the list would have dropped them - so they join it first.
+    let added = 0;
+    try { added = await syncDevices((await api('api/status')).revision); }
+    catch (e) { toast('Keine Verbindung zum Add-on – nichts gespeichert.'); return; }
+    toast((added ? found(added) : 'Die Geräteliste hat sich inzwischen geändert.') +
+      ' Nichts gespeichert – bitte prüfen und noch einmal speichern.', 9000);
+    return;
+  }
   // Only a confirmed save may restart the add-on.
   if (!r.ok) { toast(r.error || 'Speichern fehlgeschlagen.'); return; }
   dirty = false;
-  if (restart) { toast('Gespeichert – Add-on startet neu …');
-    await api('api/restart', {method: 'POST'}).catch(() => {}); }
+  REMOVED.clear();
+  if (restart) { toast('Gespeichert – Add-on startet neu …'); await restartAddon(); }
   else toast('Gespeichert. Wirksam nach einem Neustart.');
+}
+
+async function restartAddon() {
+  await api('api/restart', {method: 'POST'}).catch(() => {});
 }
 
 async function scan(deep) {
@@ -260,6 +350,17 @@ async function refresh() {
     document.getElementById('link').className = 'dot' + (s.connected ? ' on' : '');
     document.getElementById('linktext').textContent =
       s.connected ? 'Gateway verbunden' : 'Gateway getrennt';
+    document.getElementById('mqtt').className = 'dot' + (s.mqtt_connected ? ' on' : '');
+    document.getElementById('mqtttext').textContent =
+      s.mqtt_connected ? 'MQTT verbunden' : 'MQTT getrennt';
+    notes(s);
+    // Entries the add-on could not read are not in this list - saving it
+    // would write the device file without them.
+    document.querySelectorAll('button.save').forEach(b => { b.disabled = !!s.saving_blocked; });
+    if (s.revision !== REVISION) {
+      const added = await syncDevices(s.revision);
+      if (added) toast(found(added), 6000);
+    }
     const f = await api('api/frames');
     const box = document.getElementById('frames');
     document.getElementById('framecount').textContent = f.frames.length;
@@ -268,6 +369,73 @@ async function refresh() {
       `${x.count > 1 ? ' <span style="color:var(--muted)">×' + esc(x.count) + '</span>' : ''}</span>` +
       `<span>${esc(x.hint || '')}</span></div>`).join('');
   } catch (e) { /* Ingress blinzelt beim Neustart */ }
+}
+
+// The notes above the device list.  Built anew only when something changed -
+// otherwise the button that waits for its second click would lose its place
+// every three seconds.
+function notes(s) {
+  const shown = JSON.stringify([s.problems, s.saving_blocked, s.purge_held, s.restart_pending]);
+  if (shown === notesShown) return;
+  notesShown = shown;
+  const root = document.getElementById('notes');
+  root.innerHTML = '';
+  const note = (kind, title) => { const e = document.createElement('div');
+    e.className = 'note ' + kind;
+    const head = document.createElement('strong'); head.textContent = title;
+    e.appendChild(head); root.appendChild(e); return e; };
+  const line = (parent, tag, text) => { const e = document.createElement(tag);
+    e.textContent = text; parent.appendChild(e); return e; };
+
+  if (s.problems && s.problems.length) {
+    const e = note('bad', 'Die Geräteliste konnte nicht vollständig gelesen werden.');
+    const list = document.createElement('ul');
+    s.problems.forEach(text => line(list, 'li', text));
+    e.appendChild(list);
+    line(e, 'p', 'Solange das so ist, entfernt das Add-on nichts aus Home Assistant – ' +
+      'auch keine Geräte, die wirklich gelöscht wurden.' + (s.saving_blocked ?
+      ' Speichern ist gesperrt: Diese Liste kennt die nicht gelesenen Einträge nicht und ' +
+      'würde sie aus der Gerätedatei löschen. Die Datei von Hand korrigieren, dann neu starten.' :
+      ' Speichern schreibt alle Geräte dieser Liste in die Gerätedatei und leert das ' +
+      'Gedächtnis – danach ist die Liste wieder vollständig.'));
+  }
+  if (s.purge_held) {
+    const held = s.purge_held;
+    const e = note('warn', held.devices + ' Geräte (' + held.entities + ' Entities in Home ' +
+      'Assistant) stehen nicht mehr in der Geräteliste.');
+    line(e, 'p', 'So viele auf einmal sehen nach einem Versehen aus, deshalb ist noch ' +
+      'nichts entfernt. Stimmt der Pfad der Gerätedatei? Wurde das Add-on ohne seine ' +
+      'Daten umgezogen? Mit dem Entfernen vergisst Home Assistant Name, Raum und ' +
+      'Verlauf dieser Geräte.');
+    line(e, 'p', held.examples.join(', ') +
+      (held.devices > held.examples.length ? ' …' : '')).className = 'mono';
+    const button = line(e, 'button', 'Aus Home Assistant entfernen');
+    button.onclick = () => purge(button);
+  }
+  if (s.restart_pending) {
+    const e = note('', 'Gespeichert, aber noch nicht wirksam.');
+    line(e, 'p', 'Die gespeicherte Geräteliste gilt ab dem nächsten Start des Add-ons.');
+    line(e, 'button', 'Jetzt neu starten').onclick = () => {
+      toast('Add-on startet neu …'); restartAddon(); };
+  }
+}
+
+// Two clicks: the first one only asks.
+async function purge(button) {
+  if (!button.dataset.armed) {
+    button.dataset.armed = '1';
+    button.textContent = 'Wirklich entfernen? Noch einmal klicken';
+    setTimeout(() => { delete button.dataset.armed;
+      button.textContent = 'Aus Home Assistant entfernen'; }, 6000);
+    return;
+  }
+  button.disabled = true;
+  let r;
+  try { r = await post('api/purge', {}); }
+  catch (e) { toast('Keine Verbindung zum Add-on – nichts entfernt.'); button.disabled = false; return; }
+  if (!r.ok) { toast(r.error || 'Nichts entfernt.'); button.disabled = false; return; }
+  toast('Entfernt.');
+  refresh();
 }
 
 async function sendFrame() {

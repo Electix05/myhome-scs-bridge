@@ -51,7 +51,7 @@ SUPERVISOR_API = "http://supervisor"
 SUPERVISOR_TIMEOUT = 10.0
 
 ROUTES = ("/api/devices", "/api/status", "/api/frames", "/api/send", "/api/scan",
-          "/api/restart", "/api/schema")
+          "/api/restart", "/api/schema", "/api/purge")
 
 JSON_TYPE = "application/json; charset=utf-8"
 HTML_TYPE = "text/html; charset=utf-8"
@@ -74,12 +74,18 @@ class WebHandlers:
 
     status: Callable[[], dict[str, Any]]
     devices: Callable[[], dict[str, list[dict[str, Any]]]]
-    save_devices: Callable[[dict[str, list[dict[str, Any]]]], Awaitable[None]]
+    # save_devices(sections) or save_devices(sections, revision): the revision
+    # is the state of the list the page had loaded.  A save from a list that is
+    # out of date is refused with WebError("409 Conflict", ...).
+    save_devices: Callable[..., Awaitable[None]]
     frames: Callable[[], list[dict[str, Any]]]
     # Returns why the frame was not taken, or "" when the gateway acknowledged it.
     send_frame: Callable[[str], Awaitable[str]]
     scan: Callable[[bool], None]
     restart: Callable[[], None]
+    # Run the clean-up that waits for a confirmation; the number of removed
+    # topics, or None when nothing could be removed.
+    purge: Callable[[], Awaitable[int | None]] | None = None
 
 
 # --------------------------------------------------------------------------
@@ -100,6 +106,28 @@ def frame_problem(frame: str) -> str:
             or any(char not in "0123456789*#" for char in frame)):
         return "Das sieht nicht nach einem Rahmen aus."
     return ""
+
+
+def split_revision(data: dict[str, Any]) -> tuple[object, int | None]:
+    """What the page posts to ``/api/devices``: ``(sections, revision)``.
+
+    The page sends ``{"revision": 7, "devices": {...}}`` - the list together
+    with the state it was loaded at.  The plain list of sections, as earlier
+    versions of the page sent it, is still taken; then there is no revision
+    and nothing to compare.
+
+    Raises:
+        WebError: 400 when the revision is no whole number.
+    """
+    # No section is called "devices", and a section is a list - so an object
+    # under that key can only be the new form.
+    if not isinstance(data.get("devices"), dict):
+        return data, None
+    revision = data.get("revision")
+    # bool is an int in Python; true is no revision.
+    if revision is not None and (not isinstance(revision, int) or isinstance(revision, bool)):
+        raise WebError("400 Bad Request", "Die Revision muss eine ganze Zahl sein.")
+    return data["devices"], revision
 
 
 def clean_devices(data: object) -> dict[str, list[dict[str, Any]]]:
@@ -319,13 +347,16 @@ class WebServer:
         if path == "/api/devices":
             self._expect(method, "POST")
             # An empty body must never become an empty device file.
-            data = self._body(body, required=True)
+            data, revision = split_revision(self._body(body, required=True))
             try:
                 sections = clean_devices(data)
             except ValueError as err:
                 raise WebError("400 Bad Request", str(err)) from err
             try:
-                await handlers.save_devices(sections)
+                if revision is None:
+                    await handlers.save_devices(sections)
+                else:
+                    await handlers.save_devices(sections, revision)
             except OSError as err:
                 _LOGGER.error("Cannot write the device file: %s", err)
                 raise WebError("500 Internal Server Error",
@@ -346,6 +377,13 @@ class WebServer:
             self._expect(method, "POST")
             handlers.restart()
             return self._json({"ok": True})
+        if path == "/api/purge" and handlers.purge is not None:
+            self._expect(method, "POST")
+            removed = await handlers.purge()
+            if removed is None:
+                return self._json({"ok": False, "error":
+                                   "Der Broker ließ sich nicht fragen - nichts entfernt."})
+            return self._json({"ok": True, "removed": removed})
         raise WebError("404 Not Found", "not found")
 
     @staticmethod

@@ -50,20 +50,41 @@ class Registry:
         self._by_address: dict[tuple[str, str], list[Entity]] = {}
         self._by_topic: dict[str, Entity] = {}
         self._limit_reported = False
+        # What build() could not turn into an entity although it is written
+        # down - in the device file (problems) or in the discovery memory
+        # (memory_problems).  While either is not empty the bridge removes
+        # nothing from the broker: the device behind a mistyped section or a
+        # value that cannot be read still exists, and Home Assistant would
+        # forget it for good.
+        self.problems: list[str] = []
+        self.memory_problems: list[str] = []
 
     # ---------------------------------------------------------------- build
 
     def build(self, definitions: dict[str, list[dict[str, Any]]],
               discovered: list[dict[str, Any]]) -> None:
-        """Create the configured entities first, then the remembered ones."""
+        """Create the configured entities first, then the remembered ones.
+
+        Whatever cannot be created is listed in :attr:`problems` (device file)
+        or :attr:`memory_problems` (discovery memory).  An address that is
+        merely defined twice is no problem - its device exists.
+        """
         for section, items in definitions.items():
             factory = FACTORIES.get(section)
             if factory is None:
                 _LOGGER.warning("Unknown section '%s' in the device file - ignored", section)
+                if items:
+                    self.problems.append(
+                        f"Abschnitt '{section}' ist unbekannt (Tippfehler im Namen?) - "
+                        f"nicht gelesen: {len(items)} "
+                        f"{'Eintrag' if len(items) == 1 else 'Einträge'}")
                 continue
             for item in items:
                 entity = self._create(factory, item)
                 if entity is None:
+                    self.problems.append(
+                        f"{section} {item.get('where')}: der Eintrag lässt sich nicht "
+                        "lesen (ein Wert passt nicht, siehe Protokoll)")
                     continue
                 existing = self.duplicate_of(entity)
                 if existing is not None:
@@ -73,11 +94,20 @@ class Registry:
                 self.register(entity)
 
         for item in discovered:
-            factory = FACTORIES.get(str(item.get("section")))
-            if factory is None:
+            section = str(item.get("section"))
+            factory = FACTORIES.get(section)
+            entity = None if factory is None else self._create(factory,
+                                                               dict(item, discovered=True))
+            if entity is None:
+                # Kept in the memory as it is: dropping it here would lose the
+                # entry with the next write, and its entity one start later.
+                self.memory_problems.append(
+                    f"Automatisch erkanntes Gerät {section} {item.get('where')} lässt "
+                    "sich nicht lesen - es bleibt gemerkt, bis die Geräteliste in der "
+                    "Weboberfläche gespeichert wird")
+                self.discovered.append(dict(item))
                 continue
-            entity = self._create(factory, dict(item, discovered=True))
-            if entity is None or self.duplicate_of(entity) is not None:
+            if self.duplicate_of(entity) is not None:
                 continue    # the device file names this address itself
             self.register(entity)
             self.discovered.append(dict(item))
@@ -199,17 +229,36 @@ class Registry:
         self.discovered.append(item)
         return entity
 
-    def remember(self, entity: Entity) -> bool:
-        """Store what a discovered entity learned about itself; True if stored."""
+    def _memory_of(self, entity: Entity) -> dict[str, Any] | None:
         for item in self.discovered:
             if item.get("section") == entity.section and item.get("where") == entity.where:
-                item.update(entity.to_config())
-                return True
-        return False
+                return item
+        return None
 
-    def forget_discovered(self) -> None:
-        """Everything is in the device file now - drop the discovery memory."""
-        self.discovered = []
+    def is_remembered(self, entity: Entity) -> bool:
+        """True while this entity lives in the discovery memory only."""
+        return self._memory_of(entity) is not None
+
+    def remember(self, entity: Entity) -> bool:
+        """Store what a discovered entity learned about itself; True if stored."""
+        item = self._memory_of(entity)
+        if item is None:
+            return False
+        item.update(entity.to_config())
+        return True
+
+    def forget_discovered(self, items: list[dict[str, Any]] | None = None) -> None:
+        """Drop the discovery memory - these devices are in the device file now.
+
+        ``items`` limits it to the given entries (the very objects of
+        :attr:`discovered`): a device that showed up while the file was being
+        written is in neither place yet and has to stay remembered.
+        """
+        if items is None:
+            self.discovered = []
+            return
+        gone = {id(item) for item in items}
+        self.discovered = [item for item in self.discovered if id(item) not in gone]
 
 
 def load_discovered(path: str) -> tuple[list[dict[str, Any]], bool]:

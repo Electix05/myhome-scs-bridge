@@ -17,6 +17,7 @@ from myhome_scs_mqtt.app.own import gateway as gateway_module, session as sessio
 from myhome_scs_mqtt.app.settings import (
     EXAMPLE_DEVICES, MqttConfig, Settings, SettingsError, apply_mqtt_service,
     atomic_write_text, fetch_supervisor_mqtt, load_devices, parse_devices, render_device_file,
+    write_device_file,
 )
 
 
@@ -398,6 +399,70 @@ class TestWritingTheDeviceFile(TempDirTestCase):
         result = load_devices(self.write("devices.yaml", render_device_file({})))
         self.assertTrue(result.complete)
         self.assertEqual(result.sections, {})
+
+
+class TestBackupOfTheDeviceFile(TempDirTestCase):
+    """The page writes the whole file anew - what it replaces must not be lost."""
+
+    BY_HAND = "# Erdgeschoss\nlights:\n  - where: '12'   # über der Spüle\n    name: Küche\n"
+
+    def read(self, name: str) -> str:
+        with open(self.path(name), encoding="utf-8") as handle:
+            return handle.read()
+
+    def save(self, name: str) -> None:
+        write_device_file(self.path("devices.yaml"), {"lights": [{"where": "12", "name": name}]})
+
+    def test_the_replaced_version_stays_next_to_the_file(self):
+        self.write("devices.yaml", self.BY_HAND)
+        self.save("Küche")
+        self.assertNotIn("über der Spüle", self.read("devices.yaml"))
+        self.assertEqual(self.read("devices.yaml.bak"), self.BY_HAND)
+        self.assertEqual(self.read("devices.yaml.manual.bak"), self.BY_HAND)
+
+    def test_the_version_written_by_hand_survives_a_second_save(self):
+        # ".bak" alone would hold the first save by then - and the comments
+        # somebody wrote into the file would be gone for good.
+        self.write("devices.yaml", self.BY_HAND)
+        self.save("Küche")
+        first_save = self.read("devices.yaml")
+        self.save("Küche neu")
+        self.assertEqual(self.read("devices.yaml.bak"), first_save)
+        self.assertEqual(self.read("devices.yaml.manual.bak"), self.BY_HAND)
+
+    def test_nothing_to_keep_means_no_copy(self):
+        self.save("Küche")                                  # there was no file yet
+        self.assertEqual(os.listdir(self.dir), ["devices.yaml"])
+        self.save("Küche")                                  # the same again
+        self.assertEqual(os.listdir(self.dir), ["devices.yaml"])
+
+    def test_the_example_file_is_not_somebodys_handwriting(self):
+        self.write("devices.yaml", EXAMPLE_DEVICES)
+        self.save("Küche")
+        self.assertEqual(sorted(os.listdir(self.dir)), ["devices.yaml", "devices.yaml.bak"])
+
+    def test_a_copy_that_fails_does_not_stop_the_save(self):
+        self.write("devices.yaml", self.BY_HAND)
+        real_write = settings_module.atomic_write_text
+
+        def no_room_for_copies(path: str, text: str) -> None:
+            if path.endswith(".bak"):
+                raise OSError("disk full")
+            real_write(path, text)
+
+        with mock.patch.object(settings_module, "atomic_write_text", no_room_for_copies):
+            with self.assertLogs(settings_module._LOGGER, "WARNING") as logs:
+                self.save("Küche")
+        self.assertIn("name: Küche", self.read("devices.yaml"))
+        self.assertEqual(len(logs.records), 2)
+
+    def test_a_second_installation_keeps_its_own_copies(self):
+        # Every instance has a device file of its own, and so has its backup.
+        self.write("devices_haus2.yaml", self.BY_HAND)
+        write_device_file(self.path("devices_haus2.yaml"), {"lights": [{"where": "12"}]})
+        self.assertEqual(sorted(os.listdir(self.dir)),
+                         ["devices_haus2.yaml", "devices_haus2.yaml.bak",
+                          "devices_haus2.yaml.manual.bak"])
 
 
 class TestAtomicWrite(TempDirTestCase):

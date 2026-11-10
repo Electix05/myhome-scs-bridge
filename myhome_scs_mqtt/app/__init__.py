@@ -2,4 +2,4 @@
 
 # Must match "version" in config.yaml and the top entry of CHANGELOG.md; a test
 # (tests/test_packaging.py) keeps the three in step.
-__version__ = "1.23.1"
+__version__ = "1.24.0"

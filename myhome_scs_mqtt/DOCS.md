@@ -62,8 +62,12 @@ Gerätedatei geschrieben hat.
 1. **In der Weboberfläche des alten Add-ons auf „Speichern & neu starten“
    klicken.** Danach steht alles, was es kennt – auch die am Bus gefundenen
    Geräte –, in seiner `devices.yaml`. **Nicht überspringen:** Das neue Add-on
-   räumt beim ersten Start alle Discovery-Einträge weg, die es nicht kennt. Home
+   räumt beim Start alle Discovery-Einträge weg, die es nicht kennt. Home
    Assistant entfernt die betroffenen Entities dann samt Raum und eigenem Namen.
+   Ab 1.24.0 gibt es dafür ein Netz: Mehr als fünf Geräte auf einmal entfernt das
+   Add-on erst nach einer Bestätigung in der Weboberfläche (Kapitel 7.2). Steht
+   dort nach dem Umstieg „… Geräte stehen nicht mehr in der Geräteliste“, **nicht
+   bestätigen** – dann fehlt die Gerätedatei aus Schritt 5.
 2. Optionen des alten Add-ons sichern: Tab **Konfiguration** → Menü ⋮ → **Als YAML
    bearbeiten**, alles kopieren.
 3. Altes Add-on **stoppen** und **Beim Start ausführen** ausschalten. Beide
@@ -141,7 +145,7 @@ Deinstallieren** `/addon_configs/local_myhome_scs_bridge/devices.yaml` sichern
 4. Tab **Konfiguration**: mindestens `gateway_host` (IP des Gateways, z. B.
    `192.0.2.10`) und `gateway_password` eintragen, speichern.
 5. **Starten** und den Tab **Protokoll** öffnen. Erwartet werden u. a.
-   `MyHome SCS Bridge 1.23.1 starting`, `MQTT connected` und
+   `MyHome SCS Bridge 1.24.0 starting`, `MQTT connected` und
    `gateway link is up`.
 
 Bleibt `gateway_host` leer, beendet sich das Add-on sofort mit
@@ -477,7 +481,11 @@ Verbindungen über Home Assistants Ingress an.
 - **Geräte bearbeiten, anlegen und löschen** – beim Speichern landen
   eingetragene und automatisch erkannte Geräte gemeinsam in der Gerätedatei.
 - **Speichern & neu starten** übernimmt Änderungen sofort, **Nur speichern**
-  beim nächsten Start.
+  beim nächsten Start. Bis dahin steht über der Liste ein Hinweis mit dem Knopf
+  **Jetzt neu starten**, und die Seite zeigt weiter den gespeicherten Stand.
+- **Gateway und MQTT** – je ein Punkt: grün verbunden, rot getrennt.
+- **Hinweise über der Geräteliste**, wenn etwas eine Entscheidung braucht
+  (Kapitel 7.2).
 - **Bus scannen / Gründlich scannen**.
 - **Bus-Mitschnitt** mit Uhrzeit, Wiederholungen und dem Hinweis `(neu)` bei
   unbekannten Adressen; darüber ein Feld, um einen Frame von Hand zu senden.
@@ -548,6 +556,37 @@ siehe <https://www.home-assistant.io/integrations/light.mqtt/>). Diese Felder
 gibt es seit Anfang 2025; eine ältere Home-Assistant-Version würde stattdessen
 Mired erwarten.
 
+### 7.2 Was das Add-on aus Home Assistant entfernt – und wann nicht
+
+Home Assistant behält eine Entity, solange ihre Anmeldung im Broker steht. Wird
+ein Gerät aus der Geräteliste gelöscht, muss das Add-on deshalb auch die Anmeldung
+löschen – das tut es bei jedem Start für alles, was es nicht mehr kennt. Home
+Assistant vergisst die Entity dann samt Namen, Raum und Verlauf. Damit das nur
+Geräte trifft, die wirklich weg sollen, gelten seit 1.24.0 vier Regeln:
+
+1. **Unvollständige Liste = nichts wird entfernt.** Lässt sich die Gerätedatei
+   nicht lesen, ist ein Abschnitt falsch geschrieben (`ligths:`) oder passt ein
+   Wert nicht (`travel_time: 25s`), steht über der Geräteliste rot, was nicht
+   gelesen wurde. Beheben und neu starten.
+2. **Mehr als fünf Geräte auf einmal = nur nach Bestätigung.** Über der
+   Geräteliste steht dann, welche Geräte es wären. Erst prüfen: Zeigt
+   `devices_file` auf die richtige Datei? Wurde das Add-on ohne seine Daten neu
+   installiert oder umgezogen? Wurde `auto_discover` abgeschaltet, bevor die
+   erkannten Geräte gespeichert waren? Sollen die Geräte wirklich weg, räumt der
+   Knopf **Aus Home Assistant entfernen** auf (zwei Klicks). Solange die
+   Bestätigung aussteht, bleibt alles stehen und es startet kein automatischer
+   Bus-Scan. Im Protokoll: `… devices … are no longer in the device file or the
+   discovery memory`.
+3. **Die Seite speichert keinen veralteten Stand.** Findet das Add-on ein Gerät,
+   während die Seite offen ist, lädt sie es nach. Ein Speichern von einem älteren
+   Stand wird abgelehnt; die Seite ergänzt die neuen Geräte und meldet „Nichts
+   gespeichert – bitte prüfen und noch einmal speichern“.
+4. **Die ersetzte Gerätedatei bleibt liegen.** Neben der Gerätedatei stehen nach
+   dem Speichern `devices.yaml.bak` (der Stand davor) und
+   `devices.yaml.manual.bak` (der letzte von Hand geschriebene Stand, mit allen
+   Kommentaren). Zurückholen: Add-on stoppen, die Sicherung über die Gerätedatei
+   kopieren, starten.
+
 ## 8. Bus-Scan
 
 Der Scan fragt den Bus aktiv ab und sendet ausschließlich Status- und
@@ -606,4 +645,6 @@ retained.
 | `gateway is busy … slowing down` | Bremse greift – siehe Kapitel 6 und den Messplan |
 | `No MQTT broker found` | Mosquitto-Add-on installieren oder `mqtt_*` von Hand setzen |
 | `web interface: refused a request from …` | ein Zugriff kam nicht über Home Assistants Ingress |
+| `Not every device could be read - nothing is removed from the broker` | ein Eintrag der Gerätedatei ließ sich nicht lesen; was genau, steht in den Zeilen davor und rot in der Weboberfläche (Kapitel 7.2) |
+| `… devices … are no longer in the device file or the discovery memory` | so viele Geräte auf einmal entfernt das Add-on nicht ungefragt – Ursache prüfen oder in der Weboberfläche bestätigen (Kapitel 7.2) |
 | Entities „nicht verfügbar“ | Add-on läuft nicht oder die Gateway-Verbindung steht nicht (Diagnose-Entity *Gateway link*) |

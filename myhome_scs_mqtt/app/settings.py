@@ -568,17 +568,62 @@ def render_device_file(sections: dict[str, list[dict[str, Any]]],
     return DEVICE_FILE_HEADER + body
 
 
+# Next to the device file: the version the last save replaced, and the last
+# version somebody wrote by hand.
+BACKUP_SUFFIX = ".bak"
+MANUAL_BACKUP_SUFFIX = ".manual.bak"
+
+
+def backup_device_file(path: str, new_text: str) -> None:
+    """Keep what a save from the web interface is about to replace.
+
+    The page writes the whole file anew: comments, the order of the entries
+    and anything it does not show are gone afterwards, and so is a row that
+    was removed by mistake.  Two copies stay next to the file:
+
+    * ``<file>.bak`` - the version before this save;
+    * ``<file>.manual.bak`` - the last version that was written by hand.  The
+      second save would otherwise push it out of ``.bak``, and it is the one
+      that carries the comments.
+
+    Nothing is copied when the file does not exist or would not change.  A
+    copy that fails is only a warning: without it the save is what it always
+    was, and refusing it would not bring anything back.
+    """
+    try:
+        with open(path, encoding="utf-8") as handle:
+            old_text = handle.read()
+    except FileNotFoundError:
+        return
+    except (OSError, UnicodeDecodeError) as err:
+        _LOGGER.warning("No backup of %s before it is replaced: %s", path, err)
+        return
+    if old_text == new_text:
+        return
+    targets = [path + BACKUP_SUFFIX]
+    if not old_text.startswith(DEVICE_FILE_HEADER) and old_text != EXAMPLE_DEVICES:
+        targets.append(path + MANUAL_BACKUP_SUFFIX)
+    for target in targets:
+        try:
+            atomic_write_text(target, old_text)
+        except OSError as err:
+            _LOGGER.warning("No backup of %s in %s: %s", path, target, err)
+
+
 def write_device_file(path: str, sections: dict[str, list[dict[str, Any]]],
                       order: Iterable[str] = ()) -> None:
     """Render and write devices.yaml atomically.  Blocking - run it in a thread.
 
     The old add-on wrote the file on the event loop: a slow disk froze the
-    whole bridge, bus included, for as long as the write took.
+    whole bridge, bus included, for as long as the write took.  The version
+    that is replaced stays next to it, see :func:`backup_device_file`.
 
     Raises:
         OSError: when the file cannot be written - the old file stays.
     """
-    atomic_write_text(path, render_device_file(sections, order))
+    text = render_device_file(sections, order)
+    backup_device_file(path, text)
+    atomic_write_text(path, text)
 
 
 def load_devices(path: str) -> DeviceDefinitions:

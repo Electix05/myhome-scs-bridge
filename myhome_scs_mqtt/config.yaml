@@ -1,5 +1,5 @@
 name: MyHome SCS Bridge
-version: "1.23.1"
+version: "1.24.0"
 slug: myhome_scs_bridge
 description: >-
   BTicino/Legrand MyHome SCS via OpenWebNet with Home Assistant MQTT discovery -

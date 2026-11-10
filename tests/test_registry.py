@@ -46,6 +46,43 @@ class TestBuild(unittest.TestCase):
         self.assertIn("alarms", messages)
         self.assertIn("covers 21", messages)
 
+    def test_what_could_not_be_read_is_reported_as_a_problem(self):
+        # The bridge removes from Home Assistant what it does not know.  A
+        # mistyped section name ("ligths") or a value a device type cannot
+        # read leaves a device out that still exists - the bridge has to learn
+        # about that, or the typo deletes the entity.
+        with self.assertLogs(registry_module._LOGGER, "WARNING"):
+            registry = build({"ligths": [{"where": "12"}, {"where": "13"}],
+                              "covers": [{"where": "21", "travel_time": "fast"},
+                                         {"where": "22"}]})
+        self.assertEqual(len(registry.problems), 2)
+        self.assertIn("ligths", registry.problems[0])
+        self.assertIn("2 Einträge", registry.problems[0])
+        self.assertIn("covers 21", registry.problems[1])
+        self.assertEqual(registry.memory_problems, [])
+
+    def test_a_readable_file_has_no_problems(self):
+        with self.assertLogs(registry_module._LOGGER, "WARNING"):
+            registry = build({"lights": [{"where": "12", "name": "A"},
+                                         {"where": "12", "name": "B"}],    # twice: no loss
+                              "alarms": []},                               # nothing in it
+                             [{"section": "covers", "where": "33"}])
+        self.assertEqual((registry.problems, registry.memory_problems), ([], []))
+
+    def test_an_unreadable_memory_entry_is_a_problem_and_stays_remembered(self):
+        # Dropped here, it would be gone from discovered.json with the next
+        # write - and its entity from Home Assistant one start later.
+        with self.assertLogs(registry_module._LOGGER, "ERROR"):
+            registry = build({}, [{"section": "covers", "where": "33", "travel_time": "fast"},
+                                  {"section": "alarms", "where": "1"},
+                                  {"section": "lights", "where": "12"}])
+        self.assertEqual([e.where for e in registry.entities], ["12"])
+        # Not the device file's fault - saving from the page stays possible.
+        self.assertEqual(registry.problems, [])
+        self.assertEqual(len(registry.memory_problems), 2)
+        self.assertIn("covers 33", registry.memory_problems[0])
+        self.assertEqual([item["where"] for item in registry.discovered], ["33", "1", "12"])
+
     def test_an_address_defined_twice_is_used_once(self):
         with self.assertLogs(registry_module._LOGGER, "WARNING"):
             registry = build({"lights": [{"where": "12", "name": "A"},
@@ -201,6 +238,17 @@ class TestAutoDiscovery(unittest.TestCase):
         registry = build({}, [{"section": "covers", "where": "33"}])
         registry.forget_discovered()
         self.assertEqual(registry.discovered, [])
+
+    def test_forgetting_some_keeps_what_was_found_meanwhile(self):
+        # The web interface writes the device file in a worker thread.  A
+        # device that shows up on the bus meanwhile is not in that file.
+        registry = build({}, [{"section": "covers", "where": "33"}])
+        written = list(registry.discovered)
+        late = registry.auto_create(Classified("lights", "44", {}))
+        registry.forget_discovered(written)
+        self.assertEqual(registry.discovered, [{"section": "lights", "where": "44"}])
+        self.assertTrue(registry.is_remembered(late))
+        self.assertFalse(registry.is_remembered(registry.entities[0]))
 
 
 class TestDiscoveredFile(unittest.TestCase):

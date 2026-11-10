@@ -464,6 +464,118 @@ class TestBrokenDeviceFile(BridgeTestCase):
         self.assertTrue(any("device file" in r.getMessage() for r in self.logs.records))
 
 
+class TestMistypedDeviceFile(BridgeTestCase):
+    """The file is valid YAML, and still two devices in it cannot be read."""
+
+    devices = """
+ligths:
+  - where: "12"
+    name: Kitchen
+covers:
+  - where: "21"
+    name: Shutter
+    travel_time: 25s
+  - where: "22"
+    name: Second shutter
+"""
+    scan = ScanConfig(on_start=True)
+
+    async def asyncSetUp(self) -> None:
+        with self.assertLogs("myhome_scs_mqtt.app", "WARNING") as self.logs:
+            await super().asyncSetUp()
+
+    async def test_nothing_is_removed_while_a_device_could_not_be_read(self):
+        # Kitchen and Shutter exist, the bridge just cannot read them.  Taking
+        # their announcements away would delete them in Home Assistant.
+        self.assertEqual(self.collect_calls, [])
+        self.assertFalse(self.bridge.inventory_complete)
+        self.assertTrue(any("nothing is removed" in r.getMessage() for r in self.logs.records))
+        status = self.bridge.web_status()
+        problems = status["problems"]
+        self.assertEqual(len(problems), 2)
+        self.assertIn("ligths", problems[0])
+        self.assertIn("covers 21", problems[1])
+        # The page does not know these two - a save from it would delete them.
+        self.assertTrue(status["saving_blocked"])
+        # What could be read works as usual.
+        self.assertIsNotNone(self.mqtt.discovery_for("scs_bridge_2_22"))
+        # Nothing waits for a confirmation either: there was no clean-up at all.
+        self.assertIsNone(self.bridge.web_status()["purge_held"])
+        self.assertIsNone(await self.bridge.web_confirm_purge())
+        self.assertEqual(self.collect_calls, [])
+
+
+class TestHeldCleanUp(BridgeTestCase):
+    """The broker knows eight devices, this start knows none of them."""
+
+    devices = None                                # devices_file points nowhere
+    scan = ScanConfig(on_start=True)
+
+    def collect(self, config, patterns, seconds):
+        self.collect_calls.append(patterns)
+        topics = []
+        for where in range(50, 58):
+            topics += [f"homeassistant/light/scs_bridge/scs_bridge_1_{where}/config",
+                       f"myhome/light/{where}/state", f"myhome/light/{where}/name"]
+        return topics
+
+    async def asyncSetUp(self) -> None:
+        with self.assertLogs("myhome_scs_mqtt.app", "WARNING") as self.logs:
+            await super().asyncSetUp()
+
+    def removed(self) -> list[str]:
+        return [topic for topic, payload, _retain in self.mqtt.published if payload == ""]
+
+    async def test_nothing_is_removed_and_nothing_is_scanned_until_confirmed(self):
+        self.assertEqual(self.removed(), [])
+        held = self.bridge.web_status()["purge_held"]
+        self.assertEqual((held["devices"], held["entities"]), (8, 8))
+        self.assertEqual(held["examples"][0], "light/50")
+        self.assertTrue(any("8 devices" in r.getMessage() for r in self.logs.records))
+        # An empty list is no fresh installation here - no scan on top of it.
+        await asyncio.sleep(0.3)
+        self.assertFalse(self.bridge.scanning)
+        self.assertEqual(self.bridge.status.scan_state, "bereit")
+
+    async def test_the_confirmation_removes_them(self):
+        with self.assertLogs("myhome_scs_mqtt.app", "WARNING"):
+            self.assertEqual(await self.bridge.web_confirm_purge(), 24)
+        self.assertEqual(len(self.removed()), 24)
+        self.assertIsNone(self.bridge.web_status()["purge_held"])
+
+    async def test_a_device_that_came_back_meanwhile_stays(self):
+        await self.fake.emit("*1*1*50##")                     # lamp 50 is there after all
+        self.assertTrue(await wait_until(lambda: self.bridge.registry.known("lights", "50")))
+        with self.assertLogs("myhome_scs_mqtt.app", "WARNING"):
+            self.assertEqual(await self.bridge.web_confirm_purge(), 21)
+        self.assertNotIn("homeassistant/light/scs_bridge/scs_bridge_1_50/config", self.removed())
+
+
+class TestRevision(BridgeTestCase):
+    """The number the page compares its copy of the device list with."""
+
+    async def test_it_moves_with_every_device_found_and_every_thing_learned(self):
+        first = self.bridge.web_status()["revision"]
+        await self.fake.emit("*1*1*44##")                     # a new lamp
+        self.assertTrue(await wait_until(lambda: self.bridge.registry.known("lights", "44")))
+        second = self.bridge.web_status()["revision"]
+        self.assertNotEqual(second, first)
+        await self.fake.emit("*1*5*44##")                     # ... that turns out to dim
+        self.assertTrue(await wait_until(
+            lambda: self.mqtt.discovery_for("scs_bridge_1_44")["brightness"]))
+        self.assertNotEqual(self.bridge.web_status()["revision"], second)
+        # A frame of a known device changes nothing in the list.
+        third = self.bridge.web_status()["revision"]
+        await self.fake.emit("*1*0*12##")
+        await asyncio.sleep(0.1)
+        self.assertEqual(self.bridge.web_status()["revision"], third)
+
+    async def test_two_starts_do_not_share_a_number(self):
+        other = Bridge(self.settings, mqtt_factory=FakeMqtt, collect=self.collect,
+                       web_options=LOCAL_WEB)
+        self.assertNotEqual(other.revision, self.bridge.revision)
+
+
 class TestScan(BridgeTestCase):
     devices = None                                # a fresh installation
     scan = ScanConfig(on_start=True, zones=3, meters=1, contacts=3)
