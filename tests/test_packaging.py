@@ -57,7 +57,7 @@ class TestIdentity(unittest.TestCase):
         self.assertIsNotNone(top, "CHANGELOG.md has no version heading")
         self.assertEqual(manifest()["version"], __version__)
         self.assertEqual(top.group(1), __version__)
-        self.assertEqual(__version__, "1.25.0")
+        self.assertEqual(__version__, "1.26.0")
         # DOCS.md and README.md name the version in prose (install step, log
         # line to expect) - nothing else keeps those in step with a bump.
         self.assertIn(__version__, read("DOCS.md"))

@@ -51,7 +51,8 @@ SUPERVISOR_API = "http://supervisor"
 SUPERVISOR_TIMEOUT = 10.0
 
 ROUTES = ("/api/devices", "/api/status", "/api/frames", "/api/send", "/api/scan",
-          "/api/restart", "/api/schema", "/api/purge", "/api/check", "/api/inventory")
+          "/api/restart", "/api/schema", "/api/purge", "/api/check", "/api/inventory",
+          "/api/live", "/api/test")
 
 JSON_TYPE = "application/json; charset=utf-8"
 HTML_TYPE = "text/html; charset=utf-8"
@@ -90,9 +91,15 @@ class WebHandlers:
     # ValueError when it is no device list at all.  Asked while somebody types
     # and once more before anything is written.
     check: Callable[[object], list[dict[str, Any]]] | None = None
-    # The device list together with the revision it belongs to and the
-    # devices that are not in the device file yet: {revision, devices, new}.
+    # The device list together with the revision it belongs to, the devices
+    # that are not in the device file yet and the addresses the discovery
+    # leaves alone: {revision, devices, new, ignored}.
     inventory: Callable[[], dict[str, Any]] | None = None
+    # What every device is doing right now: {states: {key: text}, testable}.
+    live: Callable[[], dict[str, Any]] | None = None
+    # Switch a lamp or an actuator over by hand: test(section, where) returns
+    # why it did not, or "".
+    test: Callable[[str, str], str] | None = None
 
 
 # --------------------------------------------------------------------------
@@ -135,6 +142,26 @@ def split_revision(data: dict[str, Any]) -> tuple[object, int | None]:
     if revision is not None and (not isinstance(revision, int) or isinstance(revision, bool)):
         raise WebError("400 Bad Request", "Die Revision muss eine ganze Zahl sein.")
     return data["devices"], revision
+
+
+def ignored_addresses(data: dict[str, Any]) -> list[str] | None:
+    """The addresses the discovery is to leave alone, as the page posts them.
+
+    ``["lights|77", ...]`` under ``ignored`` next to the device list; None when
+    the page did not send the list at all - then it stays as it is.
+
+    Raises:
+        WebError: 400 when it is no list of ``section|address`` texts.
+    """
+    ignored = data.get("ignored")
+    if ignored is None:
+        return None
+    if not isinstance(ignored, list) or not all(
+            isinstance(key, str) and "|" in key and len(key) <= MAX_FRAME_LENGTH
+            for key in ignored):
+        raise WebError("400 Bad Request", "Die Liste der ausgeblendeten Adressen ist "
+                                          "keine Liste aus Abschnitt|Adresse.")
+    return ignored
 
 
 def clean_devices(data: object) -> dict[str, list[dict[str, Any]]]:
@@ -354,7 +381,9 @@ class WebServer:
         if path == "/api/devices":
             self._expect(method, "POST")
             # An empty body must never become an empty device file.
-            data, revision = split_revision(self._body(body, required=True))
+            posted = self._body(body, required=True)
+            data, revision = split_revision(posted)
+            ignored = ignored_addresses(posted) if data is not posted else None
             try:
                 sections = clean_devices(data)
             except ValueError as err:
@@ -368,7 +397,9 @@ class WebServer:
                     "ok": False, "problems": problems,
                     "error": "Die Geräteliste hat Fehler - nichts gespeichert."}))
             try:
-                if revision is None:
+                if ignored is not None:
+                    await handlers.save_devices(sections, revision, ignored)
+                elif revision is None:
                     await handlers.save_devices(sections)
                 else:
                     await handlers.save_devices(sections, revision)
@@ -403,6 +434,17 @@ class WebServer:
                 return self._json({"problems": handlers.check(devices)})
             except ValueError as err:
                 raise WebError("400 Bad Request", str(err)) from err
+        if path == "/api/live" and handlers.live is not None:
+            self._expect(method, "GET")
+            return self._json(handlers.live())
+        if path == "/api/test" and handlers.test is not None:
+            self._expect(method, "POST")
+            data = self._body(body, required=True)
+            section, where = data.get("section"), data.get("where")
+            if not isinstance(section, str) or not isinstance(where, str):
+                raise WebError("400 Bad Request", "Abschnitt und Adresse sind Text.")
+            error = handlers.test(section, where)
+            return self._json({"ok": not error, "error": error})
         if path == "/api/purge" and handlers.purge is not None:
             self._expect(method, "POST")
             removed = await handlers.purge()

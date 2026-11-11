@@ -202,6 +202,10 @@ class Entity:
         self.silenced = False
         self._refusals = 0
         self._silenced_at = 0.0
+        # True once a frame from the bus was handed to this entity.  Before
+        # that, "off" or "open" is only the value it was created with - the
+        # web interface shows nothing rather than a guess.
+        self.heard = False
 
     # ------------------------------------------------------------------ ids
 

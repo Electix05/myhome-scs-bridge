@@ -4,7 +4,7 @@ Home-Assistant-App, die eine **BTicino/Legrand-MyHome-SCS-Anlage** über **OpenW
 
 [![Home Assistant compatibility](https://github.com/Electix05/myhome-scs-bridge/actions/workflows/ha-compat.yaml/badge.svg?branch=main)](https://github.com/Electix05/myhome-scs-bridge/actions/workflows/ha-compat.yaml)
 
-Aktuelle Version: 1.25.0. Änderungen stehen im [Changelog](myhome_scs_mqtt/CHANGELOG.md).
+Aktuelle Version: 1.26.0. Änderungen stehen im [Changelog](myhome_scs_mqtt/CHANGELOG.md).
 
 ## Was sie kann
 

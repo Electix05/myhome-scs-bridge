@@ -13,8 +13,10 @@ from myhome_scs_mqtt.app.bridge import bridge as bridge_module
 from myhome_scs_mqtt.app.settings import load_devices
 from myhome_scs_mqtt.app.web import server as server_module
 
+from myhome_scs_mqtt.app.own.gateway import BusPacing
+
 from .helpers import wait_until
-from .test_bridge import BridgeTestCase
+from .test_bridge import FAST_GATEWAY, BridgeTestCase
 from .test_web import http
 
 
@@ -258,6 +260,123 @@ class TestInventory(WebBridgeTestCase):
         self.assertEqual([(f["section"], f["where"]) for f in frames],
                          [("lights", "12"), ("lights", "33")])
         self.assertLess(frames[0]["id"], frames[1]["id"])
+
+
+class TestLiveStatesAndSwitchingByHand(WebBridgeTestCase):
+    async def live(self) -> dict:
+        status, body = await http(self.port, "GET", "/api/live")
+        self.assertEqual(status, 200)
+        return json.loads(body)
+
+    async def test_every_device_has_a_state_and_only_lamps_a_button(self):
+        first = await self.live()
+        self.assertEqual(sorted(first["states"]), ["buttons|22", "climate|2", "covers|21",
+                                                   "energy|51", "lights|12"])
+        self.assertEqual(first["testable"], ["lights|12"])
+        # Nothing was heard from the lamp yet - no guess is shown.
+        self.assertEqual(first["states"]["lights|12"], "")
+        await self.fake.emit("*1*1*12##")
+        await self.fake.emit("*#18*51*113*0000850##")
+        self.assertTrue(await wait_until(lambda: self.bridge.registry.entities[1].heard))
+        second = await self.live()
+        self.assertTrue(second["states"]["lights|12"].startswith("an"))
+        self.assertEqual(second["states"]["energy|51"], "850 W")
+
+    async def test_the_button_switches_the_lamp_over(self):
+        # The lamp answers over the bus like a real one.
+        self.fake.responses["*1*1*12##"] = ["*1*1*12##"]
+        status, body = await http(self.port, "POST", "/api/test",
+                                  {"section": "lights", "where": "12"})
+        self.assertEqual((status, json.loads(body)), (200, {"ok": True, "error": ""}))
+        self.assertTrue(await wait_until(lambda: "*1*1*12##" in self.fake.received))
+        self.assertTrue(await wait_until(
+            lambda: self.bridge.web_live()["states"]["lights|12"].startswith("an")))
+        await http(self.port, "POST", "/api/test", {"section": "lights", "where": "12"})
+        self.assertTrue(await wait_until(lambda: "*1*0*12##" in self.fake.received))
+
+    async def test_nothing_that_moves_or_regulates_is_switched_just_to_see(self):
+        before = len(self.fake.received)
+        for section, where in (("covers", "21"), ("climate", "2"), ("lights", "99")):
+            with self.subTest(section=section):
+                status, body = await http(self.port, "POST", "/api/test",
+                                          {"section": section, "where": where})
+                self.assertEqual(status, 200)
+                self.assertTrue(json.loads(body)["error"])
+        self.assertEqual((await http(self.port, "POST", "/api/test", {"section": "lights"}))[0],
+                         400)
+        await asyncio.sleep(0.2)
+        commands = [f for f in self.fake.received[before:] if not f.startswith("*#")]
+        self.assertEqual(commands, [])
+
+
+class TestIgnoredAddresses(WebBridgeTestCase):
+    """A row removed from the list must not come back the next time it speaks."""
+
+    def ignored_file(self) -> list:
+        with open(self.bridge.ignored_file, encoding="utf-8") as handle:
+            return json.load(handle)
+
+    async def save(self, devices: dict, ignored: list) -> int:
+        status, _body = await http(self.port, "POST", "/api/devices", {
+            "revision": self.bridge.revision, "devices": devices, "ignored": ignored})
+        return status
+
+    async def test_a_removed_address_is_left_alone_from_then_on(self):
+        await self.fake.emit("*2*1*77##")                       # a phantom shows up
+        self.assertTrue(await wait_until(lambda: self.bridge.registry.known("covers", "77")))
+        devices = {"lights": [{"where": "12", "name": "Küche"}]}
+        self.assertEqual(await self.save(devices, ["covers|77", "covers|88"]), 200)
+        self.assertTrue(await wait_until(lambda: os.path.exists(self.bridge.ignored_file)))
+        self.assertEqual(self.ignored_file(), ["covers|77", "covers|88"])
+        _status, body = await http(self.port, "GET", "/api/inventory")
+        self.assertEqual(json.loads(body)["ignored"], ["covers|77", "covers|88"])
+        # 88 was never known: now that it speaks, nothing is created for it.
+        await self.fake.emit("*2*1*88##")
+        await self.fake.emit("*2*1*89##")                       # 89 is not on the list
+        self.assertTrue(await wait_until(lambda: self.bridge.registry.known("covers", "89")))
+        self.assertFalse(self.bridge.registry.known("covers", "88"))
+        self.assertIsNone(self.mqtt.discovery_for("scs_bridge_2_88"))
+
+    async def test_an_address_that_is_in_the_list_again_is_no_longer_ignored(self):
+        devices = {"covers": [{"where": "88", "name": "doch echt"}]}
+        self.assertEqual(await self.save(devices, ["covers|88", "lights|77"]), 200)
+        self.assertEqual(self.bridge.ignored, {"lights|77"})
+        # Taking an address back: the page sends the list without it.
+        self.assertEqual(await self.save(devices, []), 200)
+        self.assertEqual(self.bridge.ignored, set())
+        self.assertEqual(self.ignored_file(), [])
+
+    async def test_a_save_without_the_list_keeps_it(self):
+        self.assertEqual(await self.save({"lights": [{"where": "12"}]}, ["covers|88"]), 200)
+        status, _body = await http(self.port, "POST", "/api/devices",
+                                   {"lights": [{"where": "12"}]})        # the plain form
+        self.assertEqual(status, 200)
+        self.assertEqual(self.bridge.ignored, {"covers|88"})
+
+    async def test_what_is_no_list_of_addresses_is_refused(self):
+        for ignored in ("covers|88", [88], ["ohne Trenner"], {"covers|88": True}):
+            with self.subTest(ignored=ignored):
+                self.assertEqual(await self.save({"lights": [{"where": "12"}]}, ignored), 400)
+        self.assertEqual(self.bridge.ignored, set())
+
+
+class TestIgnoredAddressesSurviveARestart(WebBridgeTestCase):
+    def gateway_options(self) -> dict:
+        # The scan logic counts here, not its pace (see TestScan in test_bridge.py).
+        return {**FAST_GATEWAY, "pacing": BusPacing(rate=100.0, size=100.0, reserve=10.0)}
+
+    async def asyncSetUp(self) -> None:
+        with mock.patch.object(bridge_module, "load_ignored", lambda _path: {"covers|88"}):
+            await super().asyncSetUp()
+
+    async def test_the_list_is_read_at_the_start_and_holds_during_a_scan(self):
+        self.assertEqual(self.bridge.ignored, {"covers|88"})
+        self.fake.responses["*#2*0##"] = ["*2*0*88##", "*2*0*89##"]
+        self.bridge.trigger_scan()
+        self.assertTrue(await wait_until(
+            lambda: self.bridge.status.scan_state.startswith("fertig"), 30))
+        self.assertTrue(self.bridge.registry.known("covers", "89"))
+        self.assertFalse(self.bridge.registry.known("covers", "88"))
 
 
 class TestSavingWhileTheDeviceFileIsUnreadable(WebBridgeTestCase):

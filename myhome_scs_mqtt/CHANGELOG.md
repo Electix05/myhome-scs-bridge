@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.26.0
+
+Weboberfläche, zweiter Teil. Am Bus ändert sich nichts außer dem neuen Knopf
+„Schalten“, der einen gewöhnlichen Schaltbefehl sendet.
+
+- **Zustand je Gerät:** Neben dem Namen steht, was das Gerät gerade tut – an,
+  aus, Helligkeit, Position, Temperatur, Leistung, stillgelegt. Ein Strich heißt,
+  dass von der Adresse noch nichts über den Bus kam.
+- **Knopf „Schalten“** bei Lichtern und Schaltaktoren: schaltet das Gerät um, um
+  herauszufinden, welche Lampe an einer Adresse hängt. Der Befehl geht denselben
+  Weg wie einer aus Home Assistant. Rollläden und Heizzonen haben den Knopf nicht.
+- **Entfernte Adressen bleiben weg.** Bisher legte die Geräteerkennung eine
+  gelöschte Zeile wieder an, sobald sich die Adresse am Bus meldete. Jetzt merkt
+  sich das Add-on beim Speichern, was entfernt wurde (`ignored.json` in seinen
+  Daten), auch über einen Bus-Scan hinweg. Die Karte „Ausgeblendete Adressen“
+  zeigt sie; „zurückholen“ und „wieder zulassen“ nehmen es zurück.
+- **Suchfeld** für Name oder Adresse; die Knöpfe bleiben beim Scrollen oben stehen.
+- **Handy:** Aus jeder Tabellenzeile wird eine Karte mit beschrifteten Feldern.
+- **Hell oder dunkel wie in Home Assistant:** Die Seite übernimmt die Farben des
+  dort gewählten Themas statt der Einstellung des Betriebssystems.
+- Neue Routen: `GET /api/live`, `POST /api/test`. `POST /api/devices` nimmt
+  zusätzlich `ignored`, `GET /api/inventory` liefert es.
+
 ## 1.25.0
 
 Die Weboberfläche sagt mehr und lässt weniger durch. Am Bus und an den

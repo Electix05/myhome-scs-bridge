@@ -145,7 +145,7 @@ Deinstallieren** `/addon_configs/local_myhome_scs_bridge/devices.yaml` sichern
 4. Tab **Konfiguration**: mindestens `gateway_host` (IP des Gateways, z. B.
    `192.0.2.10`) und `gateway_password` eintragen, speichern.
 5. **Starten** und den Tab **Protokoll** öffnen. Erwartet werden u. a.
-   `MyHome SCS Bridge 1.25.0 starting`, `MQTT connected` und
+   `MyHome SCS Bridge 1.26.0 starting`, `MQTT connected` und
    `gateway link is up`.
 
 Bleibt `gateway_host` leer, beendet sich das Add-on sofort mit
@@ -486,7 +486,21 @@ Verbindungen über Home Assistants Ingress an.
 - **Geräte bearbeiten, anlegen und löschen** – beim Speichern landen
   eingetragene und automatisch erkannte Geräte gemeinsam in der Gerätedatei. Ein
   Gerät mit dem Kennzeichen **neu** wurde am Bus gefunden und steht noch nicht in
-  der Gerätedatei.
+  der Gerätedatei. Das **Suchfeld** neben den Knöpfen zeigt nur die Zeilen, deren
+  Name oder Adresse passt.
+- **Zustand je Gerät** – neben dem Namen steht, was das Gerät gerade tut (`an ·
+  40 %`, `öffnet`, `21.5 °C · Soll 20.0 °C`, `850 W`, `stillgelegt`). Ein Strich
+  heißt: Von dieser Adresse kam noch nichts über den Bus. Bei Lichtern und
+  Schaltaktoren schaltet **Schalten** das Gerät um – so zeigt sich, welche Lampe
+  an einer Adresse hängt. Rollläden und Heizzonen haben den Knopf bewusst nicht.
+  Der Befehl geht denselben Weg wie einer aus Home Assistant.
+- **Entfernte Adressen bleiben weg** – eine gelöschte Zeile käme sonst wieder,
+  sobald sich die Adresse am Bus meldet (`auto_discover`). Mit dem Speichern merkt
+  sich das Add-on die entfernten Adressen und legt sie nicht mehr an, auch nicht
+  bei einem Bus-Scan. Sie stehen unten unter **Ausgeblendete Adressen**;
+  **zurückholen** (vor dem Speichern) bringt die Zeile wieder, **wieder zulassen**
+  (danach) nimmt die Adresse von der Liste. Die Liste liegt in den Daten des
+  Add-ons (`ignored.json`), nicht in der Gerätedatei.
 - **Die Liste wird geprüft, während sie bearbeitet wird** – mit denselben
   Geräteklassen, die die Gerätedatei beim nächsten Start lesen. Fehler stehen rot
   am Feld und über der Tabelle: eine Adresse doppelt (auch als Licht und als
@@ -514,6 +528,9 @@ Verbindungen über Home Assistants Ingress an.
   markiert ist. Steht eine Adresse noch nicht in der Geräteliste (bei
   abgeschalteter Geräteerkennung oder nach dem Löschen einer Zeile), holt
   **+ übernehmen** sie dorthin.
+- **Auf dem Handy** wird aus jeder Tabellenzeile eine kleine Karte mit
+  beschrifteten Feldern. **Hell oder dunkel** richtet sich nach dem Thema von Home
+  Assistant; außerhalb von Home Assistant nach dem Betriebssystem.
 
 ### 7.1 Farbige Leuchten (RGBW) und Tunable White
 

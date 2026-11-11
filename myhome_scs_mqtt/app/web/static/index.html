@@ -116,6 +116,40 @@ tr.invalid td { background:rgba(217,48,37,.07); }
 #frames .what { display:flex; gap:8px; align-items:center; white-space:nowrap; }
 #frames .dim { color:var(--muted); }
 .foot { color:var(--muted); font-size:12px; text-align:right; margin-top:4px; }
+/* The buttons stay in reach however long the list is. */
+.bar { position:sticky; top:0; z-index:3; background:var(--bg); padding:8px 0; margin:0 0 8px; }
+.bar input { width:auto; flex:1; min-width:150px; max-width:320px; margin-left:auto; }
+#toast { z-index:5; }
+/* What the device is doing right now, and the button that switches it over. */
+td.live { white-space:nowrap; color:var(--muted); font-size:13px; }
+td.live button { margin-left:8px; padding:2px 8px; font-size:12px; }
+td.live .on { color:var(--ok); }
+.chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+.chips span { display:inline-flex; align-items:center; gap:4px; padding:2px 4px 2px 10px;
+  border:1px solid var(--line); border-radius:999px; font-size:13px; }
+.chips button { border:none; background:none; padding:2px 6px; color:var(--accent); font-size:12px; }
+/* On a phone a table with eight columns is no table any more: every device
+   becomes a small card, every field carries its own label. */
+@media (max-width: 700px) {
+  body { padding:10px; }
+  .scroll { overflow:visible; }
+  table { min-width:0; }
+  thead { display:none; }
+  tbody tr { display:grid; grid-template-columns:1fr 1fr; gap:8px 10px; padding:12px 0;
+    border-bottom:1px solid var(--line); }
+  tbody tr:last-child { border-bottom:none; }
+  td { display:block; border:none; padding:0; min-width:0; }
+  td::before { content:attr(data-label); display:block; font-size:11px;
+    text-transform:uppercase; letter-spacing:.04em; color:var(--muted); font-weight:600; }
+  td.wide, td.live { grid-column:1 / -1; }
+  td.addr input { max-width:none; width:100%; }
+  td.addr .badge { margin:4px 0 0; }
+  td.last { grid-column:1 / -1; text-align:right; }
+  select { min-width:0 !important; }
+  /* Four buttons and the search take three lines here - too much to pin. */
+  .bar { position:static; }
+  .bar input { max-width:none; margin-left:0; flex-basis:100%; }
+}
 </style>
 </head>
 <body>
@@ -133,11 +167,15 @@ tr.invalid td { background:rgba(217,48,37,.07); }
   <button class="scan" onclick="scan(false)">Bus scannen</button>
   <button class="scan" onclick="scan(true)">Gründlich scannen</button>
   <span class="chip" id="unsaved"></span>
+  <input id="search" type="text" placeholder="Suchen: Name oder Adresse" spellcheck="false"
+         autocomplete="off" oninput="applySearch()">
 </div>
 
 <div id="notes"></div>
 
 <div id="sections"></div>
+
+<div id="ignored"></div>
 
 <div class="card">
   <header onclick="toggle(this)"><h2>Bus-Mitschnitt</h2><span class="count" id="framecount"></span></header>
@@ -186,6 +224,14 @@ let checkTimer, checkRun = 0;
 // and the number of the last frame that was cleared away.
 let FRAMES = [], paused = false, clearedUpTo = 0, framesShown = '';
 let tilesShown = '', wasScanning = false;
+// Addresses the automatic discovery leaves alone ("section|address"), as the
+// add-on holds them.  Rows removed here join them with the next save.
+let IGNORED = new Set();
+// The rows removed since the list was loaded - until the next save they can
+// simply be put back.
+const TRASH = new Map();
+// What every device is doing right now, and which can be switched by hand.
+let LIVE = {states: {}, testable: []};
 
 const api = (p, o) => fetch(p, o).then(r => r.json());
 // POST with a JSON body; the answer carries the HTTP status as well.
@@ -227,10 +273,36 @@ async function load() {
   const inventory = await api('api/inventory');
   REVISION = inventory.revision;
   NEW = new Set(inventory.new);
+  IGNORED = new Set(inventory.ignored || []);
   adopt(inventory.devices);
+  adoptTheme();
   render();
   refresh();
   setInterval(refresh, 3000);
+}
+
+// Inside Home Assistant the page takes the colours of the theme chosen there -
+// light or dark is a setting of Home Assistant, not of the operating system.
+// The page is served from Home Assistant's own address (ingress), so the frame
+// around it can be read.  Anywhere else nothing happens and the colours follow
+// the operating system as before.
+function adoptTheme() {
+  try {
+    if (window.parent === window) return;
+    const theirs = getComputedStyle(window.parent.document.documentElement);
+    const pick = (name) => theirs.getPropertyValue(name).trim();
+    const map = {'--bg': '--primary-background-color', '--card': '--card-background-color',
+      '--fg': '--primary-text-color', '--muted': '--secondary-text-color',
+      '--line': '--divider-color', '--accent': '--primary-color', '--danger': '--error-color',
+      '--ok': '--success-color', '--warn': '--warning-color'};
+    // Background and text decide whether anything is readable: without both
+    // of them nothing is taken over at all.
+    if (!pick(map['--bg']) || !pick(map['--fg'])) return;
+    for (const [ours, name] of Object.entries(map)) {
+      const value = pick(name);
+      if (value) document.documentElement.style.setProperty(ours, value);
+    }
+  } catch (e) { /* not inside Home Assistant */ }
 }
 
 const key = (section, where) => section + '|' + String(where == null ? '' : where);
@@ -240,6 +312,7 @@ const found = (n) => n === 1 ? 'Ein neu erkanntes Gerät steht jetzt in der List
 function adopt(data) {
   DATA = data;
   REMOVED.clear();
+  TRASH.clear();
   PROBLEMS = [];            // the add-on's own list has nothing wrong with it
   for (const items of Object.values(DATA))
     for (const item of items) ORIGIN.set(item, String(item.where || ''));
@@ -268,7 +341,8 @@ function merge(fresh) {
 async function syncDevices() {
   const inventory = await api('api/inventory');
   let added = 0;
-  if (dirty) added = merge(inventory.devices); else adopt(inventory.devices);
+  if (dirty) added = merge(inventory.devices);
+  else { adopt(inventory.devices); IGNORED = new Set(inventory.ignored || []); }
   REVISION = inventory.revision;
   NEW = new Set(inventory.new);
   // Not while somebody types and nothing was added: building the tables anew
@@ -347,7 +421,8 @@ function render() {
       body.appendChild(note);
     }
     const table = document.createElement('table');
-    table.innerHTML = '<thead><tr><th style="width:110px">Adresse</th><th>Name</th>' +
+    table.innerHTML = '<thead><tr><th style="width:150px">Adresse</th><th>Name</th>' +
+      '<th>Zustand</th>' +
       spec.fields.map(f => `<th>${esc(f.label)}</th>`).join('') + '<th style="width:40px"></th></tr></thead>';
     const tbody = document.createElement('tbody');
     items.forEach((item, index) => tbody.appendChild(row(section, spec, item, index)));
@@ -367,8 +442,110 @@ function render() {
     root.appendChild(card);
   }
   mark();
+  paintLive();
+  showIgnored();
+  applySearch();
   // Which addresses the monitor may offer depends on what this list holds.
   showFrames();
+}
+
+// --------------------------------------------------- state, test, search
+// The state of every device next to its row, brought up to date in place:
+// building the tables anew every three seconds would take the cursor away.
+
+function paintLive() {
+  document.querySelectorAll('#sections td.live').forEach(td => {
+    const known = td.dataset.live in LIVE.states;
+    const text = known ? LIVE.states[td.dataset.live] : '';
+    const label = td.querySelector('span');
+    label.textContent = text || '–';
+    label.className = /^(an|ausgelöst|läuft|öffnet|schließt)/.test(text) ? 'on' : '';
+    label.title = known ? (text ? '' : 'Von diesem Gerät kam noch nichts über den Bus') :
+      'Dieses Gerät kennt das laufende Add-on noch nicht – erst speichern und neu starten';
+    td.querySelector('button').hidden = !LIVE.testable.includes(td.dataset.live);
+  });
+}
+
+async function testDevice(section, where, button) {
+  button.disabled = true;
+  let r;
+  try { r = await post('api/test', {section, where}); }
+  catch (e) { toast('Keine Verbindung zum Add-on.'); button.disabled = false; return; }
+  button.disabled = false;
+  if (!r.ok) { toast(r.error || 'Nicht geschaltet.'); return; }
+  // The lamp answers over the bus; its new state is there a moment later.
+  setTimeout(async () => { try { LIVE = await api('api/live'); paintLive(); } catch (e) {} }, 700);
+}
+
+function applySearch() {
+  const wanted = document.getElementById('search').value.trim().toLowerCase();
+  document.querySelectorAll('#sections .card').forEach(card => {
+    const items = DATA[card.dataset.section] || [];
+    let hits = 0;
+    card.querySelectorAll('tbody tr').forEach((tr, index) => {
+      const item = items[index] || {};
+      const hit = !wanted || String(item.where || '').toLowerCase().includes(wanted) ||
+        String(item.name || '').toLowerCase().includes(wanted);
+      tr.style.display = hit ? '' : 'none';
+      if (hit) hits++;
+    });
+    // While searching, a section without a hit only is in the way.
+    card.style.display = wanted && !hits ? 'none' : '';
+  });
+}
+
+// ------------------------------------------------------ ignored addresses
+// A device removed from the list would be created again the next time it
+// speaks on the bus.  So removing a row also tells the add-on to leave that
+// address alone - and this card is where that can be taken back.
+
+function ignoredNow() {
+  const keys = new Set([...IGNORED, ...REMOVED]);
+  for (const [section, items] of Object.entries(DATA))
+    for (const item of items) keys.delete(key(section, item.where));
+  return [...keys].sort();
+}
+
+function showIgnored() {
+  const root = document.getElementById('ignored');
+  root.innerHTML = '';
+  const keys = ignoredNow();
+  if (!keys.length) return;
+  const card = document.createElement('div');
+  card.className = 'card';
+  const head = document.createElement('header');
+  head.onclick = () => toggle(head);
+  const title = document.createElement('h2');
+  title.textContent = 'Ausgeblendete Adressen';
+  const count = document.createElement('span');
+  count.className = 'count'; count.textContent = keys.length;
+  head.appendChild(title); head.appendChild(count);
+  const body = document.createElement('div');
+  body.className = 'body';
+  const hint = document.createElement('p');
+  hint.className = 'hint'; hint.style.margin = '0';
+  hint.textContent = 'Aus der Liste entfernt: Meldet sich eine dieser Adressen am Bus, legt ' +
+    'das Add-on sie nicht wieder an. „wieder zulassen“ nimmt das zurück – wirksam mit dem ' +
+    'nächsten Speichern.';
+  const chips = document.createElement('div');
+  chips.className = 'chips';
+  for (const k of keys) {
+    const [section, where] = [k.slice(0, k.indexOf('|')), k.slice(k.indexOf('|') + 1)];
+    const chip = document.createElement('span');
+    chip.textContent = (SCHEMA[section] ? SCHEMA[section].label : section) + ' ' + where;
+    const back = document.createElement('button');
+    // Removed a moment ago and not saved yet: the row itself can come back.
+    back.textContent = TRASH.has(k) ? 'zurückholen' : 'wieder zulassen';
+    back.onclick = () => {
+      IGNORED.delete(k); REMOVED.delete(k);
+      if (TRASH.has(k)) { (DATA[section] = DATA[section] || []).push(TRASH.get(k)); TRASH.delete(k); }
+      touched(); render(); };
+    chip.appendChild(back);
+    chips.appendChild(chip);
+  }
+  body.appendChild(hint); body.appendChild(chips);
+  card.appendChild(head); card.appendChild(body);
+  root.appendChild(card);
 }
 
 // Found on the bus and not saved by anybody yet - and still the row it was.
@@ -389,7 +566,7 @@ function row(section, spec, item, index) {
   name.type = 'text'; name.value = item.name || '';
   name.dataset.key = 'name';
   name.placeholder = 'Name'; name.oninput = () => set('name', name.value);
-  const address = cell(where);
+  const address = cell(where, 'Adresse');
   address.className = 'addr';
   if (isNew(section, item)) {
     const badge = document.createElement('span');
@@ -397,7 +574,20 @@ function row(section, spec, item, index) {
     badge.title = 'Am Bus gefunden, noch nicht in der Gerätedatei gespeichert';
     address.appendChild(badge);
   }
-  tr.appendChild(address); tr.appendChild(cell(name));
+  tr.appendChild(address); tr.appendChild(cell(name, 'Name'));
+
+  // What the device is doing, and - for lamps and actuators - a button that
+  // switches it over: the quickest way to find out which address is which lamp.
+  const state = document.createElement('span');
+  const live = cell(state, 'Zustand');
+  live.className = 'live';
+  live.dataset.live = key(section, ORIGIN.get(item));
+  const test = document.createElement('button');
+  test.textContent = 'Schalten'; test.hidden = true;
+  test.title = 'Schaltet dieses Gerät um – so zeigt sich, welche Lampe an dieser Adresse hängt';
+  test.onclick = () => testDevice(section, ORIGIN.get(item), test);
+  live.appendChild(test);
+  tr.appendChild(live);
 
   for (const f of spec.fields) {
     let el;
@@ -435,22 +625,34 @@ function row(section, spec, item, index) {
         (f.type === 'number' ? Number(el.value) : el.value));
     }
     el.dataset.key = f.key;
-    tr.appendChild(cell(el));
+    const td = cell(el, f.label);
+    if (f.type === 'select' || f.type === 'list') td.className = 'wide';
+    tr.appendChild(td);
   }
 
   const del = document.createElement('button');
-  del.className = 'link'; del.title = 'Entfernen'; del.textContent = '✕';
+  del.className = 'link'; del.textContent = '✕';
+  del.title = 'Entfernen – die Adresse wird danach nicht mehr von selbst angelegt';
   del.onclick = () => { DATA[section].splice(index, 1);
-    if (ORIGIN.get(item)) REMOVED.add(key(section, ORIGIN.get(item)));
+    if (ORIGIN.get(item)) { REMOVED.add(key(section, ORIGIN.get(item)));
+      TRASH.set(key(section, ORIGIN.get(item)), item); }
     // The rows below move up by one - what was found has to move with them.
     PROBLEMS = PROBLEMS.filter(p => !(p.section === section && p.index === index))
       .map(p => p.section === section && p.index > index ? {...p, index: p.index - 1} : p);
     touched(); render(); };
-  tr.appendChild(cell(del));
+  const last = cell(del);
+  last.className = 'last';
+  tr.appendChild(last);
   return tr;
 }
 
-function cell(el) { const td = document.createElement('td'); td.appendChild(el); return td; }
+// The label is what the phone layout shows above the field (see the style sheet).
+function cell(el, label) {
+  const td = document.createElement('td');
+  if (label) td.dataset.label = label;
+  td.appendChild(el);
+  return td;
+}
 
 function refuseWithProblems() {
   toast((PROBLEMS.length === 1 ? 'Ein Fehler' : PROBLEMS.length + ' Fehler') +
@@ -468,9 +670,11 @@ async function save(restart = true) {
     const kept = (items || []).filter(i => String(i.where || '').trim() !== '');
     if (kept.length) clean[section] = kept;
   }
+  // The rows removed here go along as addresses to leave alone from now on.
+  const ignored = ignoredNow();
   let r;
   try {
-    r = await post('api/devices', {revision: REVISION, devices: clean});
+    r = await post('api/devices', {revision: REVISION, devices: clean, ignored});
   } catch (e) { toast('Keine Verbindung zum Add-on – nichts gespeichert.'); return; }
   if (r.status === 409) {
     // The add-on found devices this page did not show yet.  Saved as it is,
@@ -492,7 +696,10 @@ async function save(restart = true) {
   if (!r.ok) { toast(r.error || 'Speichern fehlgeschlagen.'); return; }
   dirty = false;
   REMOVED.clear();
+  TRASH.clear();
+  IGNORED = new Set(ignored);
   changed();
+  showIgnored();
   if (restart) { toast('Gespeichert – Add-on startet neu …'); await restartAddon(); }
   else toast('Gespeichert. Wirksam nach einem Neustart.');
 }
@@ -586,8 +793,11 @@ async function refresh() {
       const added = await syncDevices();
       if (added) toast(found(added), 6000);
     }
+    LIVE = await api('api/live');
+    paintLive();
     FRAMES = (await api('api/frames')).frames;
     showFrames();
+    adoptTheme();
   } catch (e) { /* Ingress blinzelt beim Neustart */ }
 }
 

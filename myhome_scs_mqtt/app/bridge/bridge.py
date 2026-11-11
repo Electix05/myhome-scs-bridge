@@ -30,7 +30,11 @@ from ..web.server import WebError, WebHandlers, WebServer, frame_problem, reques
 from .background import BackgroundTasks
 from .check import check_devices
 from .discovery import Collector, Discovery
-from .registry import FACTORIES, Registry, load_discovered, save_discovered
+from .live import TESTABLE, device_key, state_text
+from .registry import (
+    FACTORIES, MAX_IGNORED, Registry, load_discovered, load_ignored, save_discovered,
+    save_ignored,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -155,6 +159,8 @@ class Bridge:
                 purge=self.web_confirm_purge,
                 check=check_devices,
                 inventory=self.web_inventory,
+                live=self.web_live,
+                test=self.web_test_device,
             ),
             **(web_options or {}),
         )
@@ -175,6 +181,11 @@ class Bridge:
         # otherwise a reload brings the old list back, and the next save
         # writes that over the new file.
         self._saved_sections: dict[str, list[dict[str, Any]]] | None = None
+        # Addresses removed from the list on purpose ("section|address"): the
+        # automatic discovery leaves them alone.  Kept next to discovered.json.
+        self.ignored: set[str] = set()
+        self.ignored_file = os.path.join(
+            os.path.dirname(settings.discovered_file) or ".", "ignored.json")
         self._log = RepeatLimiter(_LOGGER)
         self._request_restart = restart
         self._restart_task: asyncio.Task[None] | None = None
@@ -201,6 +212,8 @@ class Bridge:
         if self.settings.auto_discover:
             discovered, discovered_complete = await asyncio.to_thread(
                 load_discovered, self.settings.discovered_file)
+        self.ignored = await asyncio.to_thread(load_ignored, self.ignored_file)
+
         self.registry.register(self.status)
         self.registry.build(definitions.sections, discovered)
         # Complete means: every device somebody wrote down or the bridge once
@@ -318,6 +331,7 @@ class Bridge:
                 # A frame from the bus is the best proof that the address is
                 # there - a silenced one comes back to life right here.
                 entity.note_alive()
+                entity.heard = True
                 entity.on_own(message)
             except Exception:  # noqa: BLE001 - one broken entity must not stop the rest
                 self._log.log(f"own {entity.object_id}", logging.ERROR,
@@ -372,6 +386,9 @@ class Bridge:
     def _auto_create(self, message: msg.OwnMessage) -> Entity | None:
         classified = classify(message)
         if classified is None:
+            return None
+        if f"{classified.section}|{classified.where}" in self.ignored:
+            # Somebody took this address off the list on purpose.
             return None
         entity = self.registry.auto_create(classified)
         if entity is None:
@@ -503,14 +520,53 @@ class Bridge:
         discovery memory ("section|address") - found on the bus, not yet
         written to the device file by anybody.
         """
-        new = sorted(f"{entity.section}|{entity.to_config().get('where', entity.where)}"
-                     for entity in self.registry.device_entities()
+        new = sorted(device_key(entity) for entity in self.registry.device_entities()
                      if self.registry.is_remembered(entity))
-        return {"revision": self.revision, "devices": self.web_devices(), "new": new}
+        return {"revision": self.revision, "devices": self.web_devices(), "new": new,
+                "ignored": sorted(self.ignored)}
+
+    def web_live(self) -> dict[str, Any]:
+        """What every device is doing right now, and which can be switched by hand.
+
+        ``states`` has an entry for every device the running bridge knows -
+        an empty text means nothing was heard from it yet.  A row of the page
+        that is not in here only exists in the page so far.
+        """
+        entities = self.registry.device_entities()
+        return {"states": {device_key(entity): state_text(entity) for entity in entities},
+                "testable": sorted(device_key(entity) for entity in entities
+                                   if entity.section in TESTABLE)}
+
+    def web_test_device(self, section: str, where: str) -> str:
+        """Switch a lamp or an actuator over by hand; why not, or "".
+
+        For finding out which address is which lamp: on becomes off, off (or
+        not heard of yet) becomes on.  It goes the way of every command from
+        Home Assistant - through the entity and the queue, never past them.
+        """
+        if section not in TESTABLE:
+            return "Von Hand schalten lassen sich nur Lichter und Schaltaktoren."
+        wanted = f"{section}|{where}"
+        entity = next((candidate for candidate in self.registry.device_entities()
+                       if device_key(candidate) == wanted), None)
+        if entity is None:
+            return ("Dieses Gerät kennt das laufende Add-on noch nicht - erst speichern "
+                    "und neu starten.")
+        if not self.gateway.connected:
+            return "Das Gateway ist nicht verbunden."
+        payload = "OFF" if getattr(entity, "is_on", False) else "ON"
+        _LOGGER.info("Switched by hand from the web interface: %s %s -> %s",
+                     section, where, payload)
+        entity.on_command(entity.command_topic, payload)
+        return ""
 
     async def web_save_devices(self, sections: dict[str, list[dict[str, Any]]],
-                               revision: int | None = None) -> None:
+                               revision: int | None = None,
+                               ignored: list[str] | None = None) -> None:
         """Write the device file; from then on every device is an explicit entry.
+
+        ``ignored`` replaces the list of addresses the automatic discovery
+        leaves alone (``section|address``); None keeps it as it is.
 
         ``revision`` is the state of the list the page had in front of it.  A
         save from a list that is out of date is refused: the devices found in
@@ -547,6 +603,12 @@ class Bridge:
                                 [dict(item) for item in self.registry.discovered])
         self._saved_sections = {section: [dict(item) for item in items]
                                 for section, items in sections.items() if items}
+        if ignored is not None:
+            # An address that is in the list again is no longer ignored.
+            listed = {f"{section}|{item.get('where')}"
+                      for section, items in sections.items() for item in items}
+            self.ignored = set(ignored[:MAX_IGNORED]) - listed
+            await asyncio.to_thread(save_ignored, self.ignored_file, set(self.ignored))
         self.revision += 1
         _LOGGER.info("Device file written from the web interface: %d sections",
                      len([items for items in sections.values() if items]))

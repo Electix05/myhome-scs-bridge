@@ -294,3 +294,39 @@ def save_discovered(path: str, items: list[dict[str, Any]]) -> bool:
         _LOGGER.warning("Cannot store discovered devices in %s: %s", path, err)
         return False
     return True
+
+
+# Addresses somebody removed from the device list on purpose: "section|address".
+# Without this the automatic discovery would create them again the next time
+# they speak on the bus - a phantom contact, a lamp that belongs to nothing.
+MAX_IGNORED = 2000
+
+
+def load_ignored(path: str) -> set[str]:
+    """Read ignored.json; an empty set when it is missing or cannot be read.
+
+    Losing this list costs nothing but a few devices showing up as new again,
+    so a broken file is a warning and no reason to hold anything back.
+    """
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except FileNotFoundError:
+        return set()
+    except (OSError, ValueError) as err:
+        _LOGGER.warning("Cannot read %s: %s", path, err)
+        return set()
+    if not isinstance(data, list):
+        _LOGGER.warning("%s does not contain a list - ignored", path)
+        return set()
+    return {item for item in data if isinstance(item, str) and "|" in item}
+
+
+def save_ignored(path: str, keys: set[str]) -> bool:
+    """Write ignored.json atomically; False when it could not be written."""
+    try:
+        atomic_write_text(path, json.dumps(sorted(keys), indent=2, ensure_ascii=False))
+    except OSError as err:
+        _LOGGER.warning("Cannot store the ignored addresses in %s: %s", path, err)
+        return False
+    return True

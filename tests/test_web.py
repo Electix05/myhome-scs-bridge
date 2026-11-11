@@ -189,6 +189,9 @@ class FakeBridge:
         self.restarts = 0
         self.purges = 0
         self.purge_result: int | None = 3
+        # The ignore list each save came with, and what was switched by hand.
+        self.ignored: list[object] = []
+        self.tested: list[tuple[str, str]] = []
         # What the check answers, and every list it was asked about.
         self.problems: list[dict] = []
         self.checked: list[object] = []
@@ -202,6 +205,9 @@ class FakeBridge:
                                             "time": "12:00:00", "count": 1}],
                            send_frame=self.send_frame, scan=self.scans.append,
                            restart=self.restart, purge=self.purge, check=self.check,
+                           live=lambda: {"states": {"lights|12": "an"},
+                                         "testable": ["lights|12"]},
+                           test=self.test,
                            inventory=lambda: {"revision": 7, "new": ["lights|12"],
                                               "devices": {"lights": [{"where": "12"}]}})
 
@@ -210,11 +216,17 @@ class FakeBridge:
             raise self.status_error
         return {"connected": True, "refused": 2, "unanswered": 1}
 
-    async def save_devices(self, sections: dict, revision: object = NO_REVISION) -> None:
+    async def save_devices(self, sections: dict, revision: object = NO_REVISION,
+                           ignored: object = NO_REVISION) -> None:
         if self.save_error is not None:
             raise self.save_error
         self.saved.append(sections)
         self.revisions.append(revision)
+        self.ignored.append(ignored)
+
+    def test(self, section: str, where: str) -> str:
+        self.tested.append((section, where))
+        return "" if where == "12" else "Dieses Gerät kennt das laufende Add-on noch nicht."
 
     async def purge(self) -> int | None:
         self.purges += 1
@@ -403,6 +415,63 @@ class TestPageAndRoutes(ServerTestCase):
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body), {"revision": 7, "new": ["lights|12"],
                                             "devices": {"lights": [{"where": "12"}]}})
+
+    async def test_states_and_switching_by_hand(self):
+        status, body = await http(self.port, "GET", "/api/live")
+        self.assertEqual((status, json.loads(body)["states"]), (200, {"lights|12": "an"}))
+        status, body = await http(self.port, "POST", "/api/test",
+                                  {"section": "lights", "where": "12"})
+        self.assertEqual((status, json.loads(body)), (200, {"ok": True, "error": ""}))
+        _status, body = await http(self.port, "POST", "/api/test",
+                                   {"section": "lights", "where": "99"})
+        self.assertFalse(json.loads(body)["ok"])
+        self.assertEqual(self.bridge.tested, [("lights", "12"), ("lights", "99")])
+        # Switching is no reading: a GET must never do it.
+        self.assertEqual((await http(self.port, "GET", "/api/test"))[0], 405)
+        self.assertEqual((await http(self.port, "POST", "/api/test", {"where": 12}))[0], 400)
+
+    async def test_the_addresses_to_leave_alone_travel_with_the_save(self):
+        devices = {"lights": [{"where": "12"}]}
+        await http(self.port, "POST", "/api/devices",
+                   {"revision": 7, "devices": devices, "ignored": ["covers|77"]})
+        await http(self.port, "POST", "/api/devices", {"revision": 7, "devices": devices})
+        await http(self.port, "POST", "/api/devices", devices)
+        # Sent: replaced.  Not sent: the list stays as it is.
+        self.assertEqual(self.bridge.ignored, [["covers|77"], NO_REVISION, NO_REVISION])
+        for nonsense in ("covers|77", [77], ["covers77"], ["x|" + "1" * 80]):
+            with self.subTest(nonsense=nonsense):
+                status, _body = await http(self.port, "POST", "/api/devices", {
+                    "revision": 7, "devices": devices, "ignored": nonsense})
+                self.assertEqual(status, 400)
+        self.assertEqual(len(self.bridge.saved), 3)
+
+    async def test_the_page_shows_states_and_remembers_removed_addresses(self):
+        _status, body = await http(self.port, "GET", "/")
+        # The state is painted into the rows in place - no new tables.
+        paint = body[body.index("function paintLive"):body.index("async function testDevice")]
+        self.assertIn("LIVE.states", paint)
+        self.assertNotIn("render()", paint)
+        self.assertNotIn("innerHTML", paint)
+        self.assertIn("post('api/test', {section, where})", body)
+        # Removed rows go along with the save as addresses to leave alone.
+        save = body[body.index("async function save"):body.index("async function scan")]
+        self.assertIn("ignoredNow()", save)
+        self.assertIn("devices: clean, ignored}", save)
+        self.assertIn("function showIgnored", body)
+        self.assertIn("zurückholen", body)
+
+    async def test_search_phone_layout_and_the_theme_of_home_assistant(self):
+        _status, body = await http(self.port, "GET", "/")
+        self.assertIn("function applySearch", body)
+        self.assertIn("@media (max-width: 700px)", body)
+        self.assertIn("td.dataset.label = label", body)
+        self.assertIn("position:sticky", body)
+        # The colours of Home Assistant are read from the frame around the
+        # page - and only there; outside of it nothing may break.
+        theme = body[body.index("function adoptTheme"):body.index("const key = ")]
+        self.assertIn("window.parent === window", theme)
+        self.assertIn("--primary-background-color", theme)
+        self.assertIn("catch (e)", theme)
 
     async def test_the_page_checks_before_it_saves(self):
         _status, body = await http(self.port, "GET", "/")
