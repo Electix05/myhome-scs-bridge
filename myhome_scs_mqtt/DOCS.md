@@ -145,7 +145,7 @@ Deinstallieren** `/addon_configs/local_myhome_scs_bridge/devices.yaml` sichern
 4. Tab **Konfiguration**: mindestens `gateway_host` (IP des Gateways, z. B.
    `192.0.2.10`) und `gateway_password` eintragen, speichern.
 5. **Starten** und den Tab **Protokoll** öffnen. Erwartet werden u. a.
-   `MyHome SCS Bridge 1.26.0 starting`, `MQTT connected` und
+   `MyHome SCS Bridge 1.27.0 starting`, `MQTT connected` und
    `gateway link is up`.
 
 Bleibt `gateway_host` leer, beendet sich das Add-on sofort mit
@@ -407,6 +407,12 @@ Abfragen, Keepalive und den Bus-Scan gleichermaßen:
   auf dieselbe Grenze und Bremse, bewegt die Bremse aber nicht selbst.
 - Unabhängig davon lassen Rollläden Positionsabfragen aus, solange mehr als
   vier Frames in der Warteschlange stehen.
+- **Öffnen und Schließen werden nicht im Sekundentakt verfolgt.** Während der
+  Fahrt steht in Home Assistant „öffnet“ bzw. „schließt“, die Position bleibt bis
+  zum Halt die alte. Bleibt der Motor stehen, holt das Add-on die Position mit
+  **einer** Abfrage. Kommt die Stopp-Meldung nicht an, sieht es alle 30 Sekunden
+  einmal nach. Nur eine Zwischenstellung, die das Add-on selbst anfahren muss
+  (Regelkreis), fragt weiter jede Sekunde – ohne das träfe sie das Ziel nicht.
 
 ### 6.1 Takt der Abfragerunde
 

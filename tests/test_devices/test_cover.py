@@ -253,39 +253,140 @@ class TestClosedLoop(CoverTestCase):
 
 
 class TestTracking(CoverTestCase):
-    def test_movement_started_elsewhere_is_followed(self):
-        cover = self.make()
-        cover.on_own(frame("*2*1*21##"))            # wall switch: moving up
-        self.assertEqual(self.last("state"), "opening")
-        self.rec.advance(1.0)
-        cover.tick()
-        self.assertEqual(self.rec.sent, [ASK])
-        cover.on_own(frame("*#2*21*10*11*30*001*0##"))
-        self.assertEqual(self.last("position"), "30")
-        cover.on_own(frame("*#2*21*10*10*35*001*0##"))
-        self.rec.clear()
-        self.rec.advance(1.0)
-        cover.tick()
-        self.assertEqual(self.rec.sent, [], "still polling after the stop")
+    """Open and close are not watched second by second.
 
-    def test_polling_backs_off_when_the_bus_is_busy(self):
-        cover = self.make(where="77")
-        cover.on_own(frame("*2*1*77##"))
+    "Opening" is all there is to say while the motor runs; when it stops, one
+    request fetches the position.  Before, every travel put a request per
+    second on the bus - forty shutters closing at dusk, forty requests a second.
+    """
+
+    def make_reporting(self, position: str = "100") -> Cover:
+        cover = self.make()
+        cover.on_own(frame(f"*#2*21*10*10*{position}*001*0##"))      # it knows where it is
+        self.rec.advance(60.0)                                       # ... and that was a while ago
+        self.rec.clear()
+        return cover
+
+    def travel(self, cover: Cover, seconds: int) -> None:
+        for _ in range(seconds):
+            self.rec.advance(1.0)
+            cover.tick()
+
+    def test_a_travel_is_not_polled(self):
+        cover = self.make_reporting()
+        cover.on_own(frame(DOWN))                   # wall switch or Home Assistant
+        self.assertEqual(self.last("state"), "closing")
+        self.travel(cover, 25)
+        self.assertEqual(self.rec.sent, [], "a plain close was polled")
+        self.assertEqual((self.last("state"), self.last("position")), ("closing", "100"))
+
+    def test_the_position_is_fetched_once_when_the_motor_stops(self):
+        cover = self.make_reporting()
+        cover.on_own(frame(DOWN))
+        self.travel(cover, 25)
+        cover.on_own(frame(STOP))
+        self.assertEqual(self.rec.sent, [ASK])
+        # Not "open at 100 %" for the blink of an eye - that was before the
+        # travel, and an automation would take it at its word.
+        self.assertEqual((self.last("state"), self.last("position")), ("closing", "100"))
+        cover.on_own(frame("*#2*21*10*10*0*001*0##"))
+        self.assertEqual((self.last("state"), self.last("position")), ("closed", "0"))
+        self.travel(cover, 10)
+        self.assertEqual(self.rec.sent, [ASK], "asked again although the answer came")
+
+    def test_a_stop_half_way_shows_where_it_stopped(self):
+        cover = self.make_reporting("0")
+        cover.on_own(frame(UP))
+        self.travel(cover, 8)
+        cover.on_own(frame(STOP))
+        cover.on_own(frame("*#2*21*10*10*37*001*0##"))
+        self.assertEqual((self.last("state"), self.last("position")), ("open", "37"))
+
+    def test_an_arrival_the_actuator_announced_itself_is_not_asked_for_again(self):
+        # Measured: "50 %, stopped" a tenth of a second before the stop frame.
+        cover = self.make_reporting()
+        cover.on_own(frame(DOWN))
+        self.travel(cover, 11)
+        cover.on_own(frame("*#2*21*10*10*50*001*0##"))
+        cover.on_own(frame(STOP))
+        self.assertEqual(self.rec.sent, [])
+        self.assertEqual((self.last("state"), self.last("position")), ("open", "50"))
+
+    def test_an_answer_that_does_not_come_is_asked_for_once_more_and_then_let_go(self):
+        cover = self.make_reporting()
+        cover.on_own(frame(DOWN))
+        self.travel(cover, 20)
+        cover.on_own(frame(STOP))
+        self.travel(cover, int(cover_module.PENDING_TIMEOUT) + 1)
+        self.assertEqual(self.rec.sent, [ASK, ASK])
+        self.assertEqual(self.last("state"), "closing")
+        self.travel(cover, int(cover_module.PENDING_TIMEOUT) + 1)
+        self.assertEqual(self.rec.sent, [ASK, ASK], "kept asking a silent gateway")
+        # Settled with what is known; the next refresh round asks again.
+        self.assertEqual(self.last("state"), "open")
+        self.travel(cover, 30)
+        self.assertEqual(self.rec.sent, [ASK, ASK])
+
+    def test_a_stop_frame_that_got_lost_is_noticed(self):
+        # Without it the shutter would stay "closing" until the next refresh
+        # round.  One look every TRACKING_CHECK seconds - not one per second.
+        cover = self.make_reporting()
+        cover.on_own(frame(DOWN))
+        self.travel(cover, int(cover_module.TRACKING_CHECK) - 1)
+        self.assertEqual(self.rec.sent, [])
+        self.travel(cover, 2)
+        self.assertEqual(self.rec.sent, [ASK])
+        cover.on_own(frame("*#2*21*10*10*0*001*0##"))       # it stopped long ago
+        self.assertEqual((self.last("state"), self.last("position")), ("closed", "0"))
+        self.travel(cover, 90)
+        self.assertEqual(self.rec.sent, [ASK], "still looking after the stop")
+
+    def test_a_long_travel_costs_a_frame_now_and_then(self):
+        cover = self.make_reporting()
+        cover.on_own(frame(DOWN))
+        for second in range(1, 91):
+            self.rec.advance(1.0)
+            cover.tick()
+            if second % 30 == 0:
+                cover.on_own(frame("*#2*21*10*12*50*001*0##"))      # still moving
+        self.assertEqual(self.rec.sent, [ASK] * 3)
+
+    def test_the_look_waits_while_the_bus_is_busy(self):
+        cover = self.make_reporting()
+        cover.on_own(frame(DOWN))
         self.rec.depth = cover_module.MAX_QUEUE_FOR_POLLING + 1
-        cover.tick()
+        self.travel(cover, int(cover_module.TRACKING_CHECK) + 5)
         self.assertEqual(self.rec.sent, [])
         self.rec.depth = 0
-        cover.tick()
-        self.assertEqual(self.rec.sent, ["*#2*77*10##"])
+        self.travel(cover, 1)
+        self.assertEqual(self.rec.sent, [ASK])
+
+    def test_a_basic_actuator_is_never_asked_while_it_travels(self):
+        # It refuses the question - asked every second, three refusals in a
+        # row made the address count as dead in the middle of its travel.
+        cover = self.make(where="77")
+        cover.on_own(frame("*2*1*77##"))
+        self.travel(cover, 120)
+        cover.on_own(frame("*2*0*77##"))
+        self.assertEqual(self.rec.sent, [])
+        self.assertEqual(self.rec.last("myhome/cover/77/state"), "open")
 
     def test_tracking_gives_up_eventually(self):
-        cover = self.make()
-        cover.on_own(frame("*2*2*21##"))
+        cover = self.make_reporting()
+        cover.on_own(frame(DOWN))
         self.rec.advance(cover_module.TRACKING_TIMEOUT + 1)
         cover.tick()
         self.rec.clear()
-        cover.tick()
+        self.travel(cover, 60)
         self.assertEqual(self.rec.sent, [])
+
+    def test_the_status_answer_of_a_refresh_round_asks_nothing(self):
+        # "*2*0*21##" also is what a shutter at rest answers when asked.
+        cover = self.make_reporting()
+        cover.on_own(frame(STOP))
+        cover.on_own(frame(STOP))
+        self.assertEqual(self.rec.sent, [])
+        self.assertEqual(self.last("state"), "open")
 
     def test_state_codes_of_dimension_10(self):
         cover = self.make()

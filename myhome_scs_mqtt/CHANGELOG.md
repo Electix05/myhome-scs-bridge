@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.27.0
+
+- **Rollläden: Öffnen und Schließen werden nicht mehr im Sekundentakt abgefragt.**
+  Bisher fragte das Add-on während jeder Fahrt jede Sekunde die Position ab – auch
+  bei einer Fahrt vom Wandtaster. Jetzt steht in Home Assistant „öffnet“ bzw.
+  „schließt“, und erst wenn der Motor stehen bleibt, holt **eine** Abfrage die
+  Position. Bis sie da ist, bleibt der Zustand „öffnet“/„schließt“ – so wird nie
+  für einen Augenblick die Position von vor der Fahrt gemeldet. Meldet der Aktor
+  seine Ankunft selbst (Positionsbefehl), entfällt auch diese Abfrage.
+- **Sicherheitsnetz:** Geht die Stopp-Meldung verloren, sieht das Add-on alle
+  30 Sekunden einmal nach, statt bis zur nächsten Abfragerunde „öffnet“ zu
+  zeigen. Bleibt die Antwort nach dem Halt aus, fragt es einmal nach.
+- **Aktoren ohne Positionsmeldung werden während der Fahrt gar nicht mehr
+  gefragt.** Sie lehnen die Frage ab; im Sekundentakt gestellt, konnte das die
+  Adresse mitten in der Fahrt als „stillgelegt“ erscheinen lassen.
+- Unverändert: Eine Zwischenstellung, die das Add-on selbst anfahren muss
+  (Regelkreis), fragt weiter jede Sekunde – sonst träfe sie das Ziel nicht.
+- Die Weboberfläche zeigt bei einem fahrenden Rollladen nur „öffnet“/„schließt“.
+
 ## 1.26.0
 
 Weboberfläche, zweiter Teil. Am Bus ändert sich nichts außer dem neuen Knopf

@@ -55,7 +55,9 @@ def state_text(entity: Entity) -> str:
         if not entity.heard:
             return ""
         text = _COVER_STATES.get(entity.state, entity.state)
-        if entity.reports_position:
+        # No number while it travels: the position is only fetched when the
+        # motor stops, what is at hand until then is where it started from.
+        if entity.reports_position and entity.state in ("open", "closed"):
             text += f" · {int(round(entity.position))} %"
         return text
     if isinstance(entity, Climate):

@@ -48,7 +48,9 @@ class TestStateText(unittest.TestCase):
         shutter = heard(make("covers", where="21"), "*2*1*21##")
         self.assertEqual(state_text(shutter), "öffnet")
         reporting = heard(make("covers", where="22"), "*#2*22*10*10*40*001*0##")
-        self.assertIn(" · 40 %", state_text(reporting))
+        self.assertEqual(state_text(reporting), "offen · 40 %")
+        # While it travels the number is where it started from - not shown.
+        self.assertEqual(state_text(heard(reporting, "*2*2*22##")), "schließt")
 
     def test_heating_meters_and_sensors(self):
         zone = heard(make("climate", where="2"), "*#4*2*0*0215##")

@@ -6,6 +6,9 @@ zugleich fahren"):
 * Dimension 10 carries ``<state>*<position>*<priority>*<info>``; state 10 =
   stopped, 11 = moving up, 12 = moving down; position 0 = closed.
 * The gateway never reports a position by itself - it only answers requests.
+  A travel somebody started with open or close is therefore not watched second
+  by second: "opening" is all there is to say until the motor stops, and then
+  one request fetches where it stopped (see TRACKING_CHECK).
 * A position command is accepted in exactly one form,
   ``*#2*<where>*#11#001#1*<value>##`` with the value *without* leading zeros,
   and the actuator then announces its arrival unasked.
@@ -62,6 +65,19 @@ TILT_STEP_MIN = 0.1
 TILT_SETTLE = 0.6
 # How long to follow a movement somebody else started before giving up.
 TRACKING_TIMEOUT = 180.0
+# A plain open or close is not polled while it runs - the stop arrives as a
+# frame of its own, and the position is asked for once then.  Should that frame
+# get lost, the shutter would stay "opening" until the next refresh round; one
+# look every TRACKING_CHECK seconds catches that at the price of a frame or two
+# per travel instead of one per second.
+TRACKING_CHECK = 30.0
+# A position younger than this needs no second request when the stop arrives:
+# an actuator that drives to a position announces its arrival itself, a tenth
+# of a second before the stop frame (measured, WISSEN.md "Rollläden").
+POSITION_FRESH = 2.0
+# How often the position is asked for again when the answer after a stop does
+# not come, before the state is settled with the position at hand.
+FINAL_RETRIES = 1
 
 POSITION_CONTROLS = ("auto", "native", "software", "off")
 
@@ -118,6 +134,12 @@ class Cover(Entity):
         self._pending_since = 0.0
         self._tracking = False
         self._tracking_since = 0.0
+        self._tracking_asked = 0.0
+        # When the position at hand arrived, and - while the answer to the one
+        # request after a stop is still out - when that was asked and how often.
+        self._position_at = -math.inf
+        self._final_asked: float | None = None
+        self._final_tries = 0
         # Slat control for venetian blinds, opt-in via "tilt_time".
         self.tilt_time = float(config.get("tilt_time") or 0)
         self.tilt = int(config.get("tilt_start", 50))
@@ -390,7 +412,10 @@ class Cover(Entity):
 
     def on_own(self, message: msg.OwnMessage) -> None:
         if message.kind == msg.KIND_NORMAL:
-            self._apply_movement(message.what)
+            if self._stopped_without_position(message.what):
+                self._ask_where_it_stopped()
+            else:
+                self._apply_movement(message.what)
         elif (message.kind == msg.KIND_DIMENSION_RESPONSE
               and message.dimension == DIM_SHUTTER_STATUS):
             # An answer to dimension 10 proves the actuator knows where it is.
@@ -401,6 +426,8 @@ class Cover(Entity):
             if len(values) > 1 and is_number(values[1]):
                 level = max(0, min(100, int(values[1])))
                 self.position = 100 - level if self.invert_position else level
+                self._position_at = self.ctx.now()
+                self._final_asked = None
                 if (self._native_target is not None and self._moving_dir == 0
                         and abs(self.position - self._native_target) <= POSITION_TOLERANCE):
                     # Arrived.  A halt anywhere else belongs to a change of
@@ -416,6 +443,35 @@ class Cover(Entity):
         else:
             return
         self.publish_state()
+
+    def _stopped_without_position(self, what: str) -> bool:
+        """A stop frame for a travel whose end position nobody knows yet.
+
+        A plain open or close is not polled while it runs, so when the motor
+        stops the position at hand is the one from before the travel.  Not so
+        during a slat impulse (a twitch, asked about afterwards anyway), a
+        position command (the actuator announces its arrival itself) and the
+        closed loop (asked every second) - there the position is fresh.
+        """
+        return (what in STOP_CODES and self._moving_dir != 0 and self.reports_position
+                and not self._tilting and self._native_target is None
+                and self.ctx.now() - self._position_at > POSITION_FRESH)
+
+    def _ask_where_it_stopped(self) -> None:
+        """The motor stopped: fetch the position once, then say open or closed.
+
+        Until the answer is here the state stays "opening" or "closing".  The
+        old position is no basis for "open" or "closed" - a shutter that has
+        just run all the way down would be announced as open at 100 % for the
+        blink of an eye, and an automation would take that at its word.
+        """
+        now = self.ctx.now()
+        self._tracking = False
+        self._integrate(now)
+        self._moving_dir = 0
+        self._final_asked = now
+        self._final_tries = 0
+        self.send(self._status_request())
 
     def _enable_position_feedback(self) -> None:
         if self.reports_position:
@@ -434,8 +490,12 @@ class Cover(Entity):
         if what in UP_CODES or what in DOWN_CODES:
             # Something is moving - no matter who started it, a wall switch
             # included.  Follow it so the percentage stays live.
+            if not self._tracking:
+                self._tracking_asked = now
             self._tracking = True
             self._tracking_since = now
+            # Moving again: whatever was asked about the last stop is moot.
+            self._final_asked = None
             if self.supports_tilt:
                 # Travelling up opens the slats, travelling down closes them.
                 self.tilt = 100 if what in UP_CODES else 0
@@ -510,10 +570,32 @@ class Cover(Entity):
             else:
                 self.send(self._status_request())
         elif self._tracking:
+            # Nothing to do while it travels.  Only now and then one look, in
+            # case the stop frame got lost - not the request per second that
+            # forty shutters closing at dusk used to put on the bus.
             if now - self._tracking_since > TRACKING_TIMEOUT:
                 self._tracking = False
-            elif not self._bus_congested():
+            elif (self.reports_position and now - self._tracking_asked >= TRACKING_CHECK
+                  and not self._bus_congested()):
+                # Only an actuator that knows its position is asked at all: a
+                # basic one refuses the question, and its stop frame says
+                # everything there is to know.
+                self._tracking_asked = now
                 self.send(self._status_request())
+
+        if self._final_asked is not None and now - self._final_asked > PENDING_TIMEOUT:
+            if self._final_tries < FINAL_RETRIES:
+                self._final_tries += 1
+                self._final_asked = now
+                self.send(self._status_request())
+            else:
+                # The gateway stayed silent: settle with the position at hand.
+                # The next refresh round asks again.
+                self._final_asked = None
+                _LOGGER.debug("%s: no position after the stop, keeping %d%%",
+                              self.name, self.position)
+                self.state = STATE_CLOSED if self.position <= 0 else STATE_OPEN
+                self.publish_state()
 
         if not self._moving_dir or self.travel_time <= 0:
             return
